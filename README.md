@@ -144,6 +144,12 @@ To go faster, stop it with Ctrl+C, use a smaller dataset (see step 2 of the
 [Quick start](#2-train-the-model-once)), then run `aicontrib prepare` and `aicontrib embed` again. The
 progress made on the full dataset is discarded when you change the size.
 
+**Training stops earlier than you'd like** — it stops after `early_stopping_patience` epochs (default 20)
+without a better validation macro-F1, halving the learning rate along the way. Raise the patience in
+`configs/local.yaml`, e.g. `training: {early_stopping_patience: 40}`, and re-run `aicontrib train` only
+(the embeddings are reused, so it takes minutes). The `training:` section of
+`configs/local.example.yaml` explains each setting and how to read the dashboard to choose them.
+
 **`CUDA out of memory` during `embed`** — batches already shrink automatically when this happens; if it
 still fails, set a smaller batch in `configs/local.yaml`, e.g.
 `embedding: {max_tokens_per_batch: 8192}`, and run `aicontrib embed` again (it resumes).
@@ -190,10 +196,13 @@ flowchart LR
 - Embeddings are computed once per split and cached (`data/embeddings/*.npz`); the head then trains on
   fixed 256-d vectors, so epochs take seconds even on CPU.
 - Objective: unweighted cross-entropy. Optimizer: Adam, lr 1e-3, weight decay 1e-4 (classic L2, not
-  AdamW's decoupled decay), batch 64, up to 30 epochs, seed 42.
-- Model selection: validation **macro-F1** after every epoch; the best epoch's weights are the checkpoint,
-  and training stops after 5 epochs without improvement. Macro-F1 (not accuracy) so the minority class
-  weighs as much as the majority ones.
+  AdamW's decoupled decay), batch 64, up to 200 epochs, seed 42.
+- Model selection: validation **macro-F1** after every epoch; the best epoch's weights are the checkpoint.
+  Macro-F1 (not accuracy) so the minority class weighs as much as the majority ones.
+- Schedule: when validation macro-F1 hasn't improved for 5 epochs the learning rate is halved
+  (`ReduceLROnPlateau`, floor 1e-5), and training stops after 20 epochs without improvement — so the
+  learning rate is reduced a few times before training gives up. All of these are settings in the
+  `training:` section (see `configs/local.example.yaml`).
 - Regularization: dropout 0.2, weight decay, early stopping, and — structurally — a small head on a frozen
   encoder.
 

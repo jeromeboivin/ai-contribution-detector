@@ -55,8 +55,13 @@ def train(config_path: str | None = None) -> Path:
         dropout=cfg["model"]["dropout"],
     ).to(device)
 
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=cfg["training"]["lr"], weight_decay=cfg["training"]["weight_decay"]
+    tcfg = cfg["training"]
+    optimizer = torch.optim.Adam(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
+    # Halve the learning rate when validation macro-F1 stalls: smaller steps often find further gains
+    # before early stopping gives up. threshold=0 -> same "strictly better" rule as early stopping.
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=tcfg["lr_reduce_factor"], patience=tcfg["lr_reduce_patience"],
+        min_lr=tcfg["min_lr"], threshold=0.0,
     )
     criterion = nn.CrossEntropyLoss()
 
@@ -71,9 +76,10 @@ def train(config_path: str | None = None) -> Path:
     serve_dashboard(metrics_logger.path, port, background=True)
     print(f"Training dashboard: http://127.0.0.1:{port}")
 
-    for epoch in range(cfg["training"]["epochs"]):
+    for epoch in range(tcfg["epochs"]):
         model.train()
         total_loss = 0.0
+        lr = optimizer.param_groups[0]["lr"]
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
@@ -85,8 +91,11 @@ def train(config_path: str | None = None) -> Path:
 
         val_f1 = _evaluate_loader(model, val_loader, device)
         train_loss = total_loss / len(train_ds)
-        print(f"epoch {epoch + 1}: train_loss={train_loss:.4f} val_macro_f1={val_f1:.4f}")
-        metrics_logger.log(epoch=epoch + 1, train_loss=train_loss, val_macro_f1=val_f1)
+        print(f"epoch {epoch + 1}: train_loss={train_loss:.4f} val_macro_f1={val_f1:.4f} lr={lr:.2e}")
+        metrics_logger.log(epoch=epoch + 1, train_loss=train_loss, val_macro_f1=val_f1, lr=lr)
+        scheduler.step(val_f1)
+        if optimizer.param_groups[0]["lr"] < lr:
+            print(f"  validation macro-F1 stalled: learning rate reduced to {optimizer.param_groups[0]['lr']:.2e}")
 
         if val_f1 > best_f1:
             best_f1 = val_f1
@@ -103,8 +112,9 @@ def train(config_path: str | None = None) -> Path:
             )
         else:
             epochs_without_improvement += 1
-            if epochs_without_improvement >= cfg["training"]["early_stopping_patience"]:
-                print(f"early stopping at epoch {epoch + 1} (best val_macro_f1={best_f1:.4f})")
+            if epochs_without_improvement >= tcfg["early_stopping_patience"]:
+                print(f"early stopping at epoch {epoch + 1}: no better validation macro-F1 for "
+                      f"{epochs_without_improvement} epochs (best {best_f1:.4f})")
                 break
 
     print(f"best val_macro_f1={best_f1:.4f}, checkpoint saved to {checkpoint_path}")

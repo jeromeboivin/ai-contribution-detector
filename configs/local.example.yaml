@@ -2,6 +2,15 @@
 # uncomment what you need. Anything here overrides configs/default.yaml -- only the keys you
 # set; everything else keeps its default. Editing local.yaml instead of default.yaml means
 # `git pull` never conflicts with your changes.
+#
+# Each section below starts with a top-level key (`dataset:`, `training:`, `known_repos:`).
+# Write each key only once: to use two options of the same section, put them under the same
+# key, e.g.
+#   dataset:
+#     per_class_cap: {train: 10000, validation: 1000, test: 1000}
+#     languages: {include: [Python, JavaScript, C++, C#]}
+#   training:
+#     early_stopping_patience: 30
 
 # ---- Quick prototype: train on a subset of the data ---------------------------------
 # The full dataset (~2.3M samples) can take days to embed. Rows are capped per class and per
@@ -27,6 +36,26 @@
 #     # exclude: [Rust, Ruby, HTML]
 #
 # (If you also use per_class_cap above, put both under the same single `dataset:` key.)
+
+# ---- Training: when to stop, and how fast to learn ------------------------------------
+# Only `aicontrib train` needs re-running after changing these (then `evaluate`); the
+# embeddings are reused. Each epoch takes seconds, and only the best epoch (highest
+# validation macro-F1) is saved, so training longer never makes the saved model worse.
+# Watch the validation macro-F1 chart at http://127.0.0.1:8765 while training:
+#   - still rising when training stops   -> raise early_stopping_patience
+#   - jumping up and down a lot           -> lower lr (e.g. 0.0003)
+#   - flat for dozens of epochs           -> more epochs won't help; more/other data might
+#
+# training:
+#   epochs: 200                   # hard upper limit on training length
+#   early_stopping_patience: 20   # stop after this many epochs without a new best score
+#   lr: 0.001                     # learning rate: size of each learning step
+#   lr_reduce_patience: 5         # halve the learning rate after this many epochs without progress...
+#   lr_reduce_factor: 0.5         # ...by this factor...
+#   min_lr: 0.00001               # ...but never below this
+#
+# Keep lr_reduce_patience well below early_stopping_patience (e.g. 5 vs 20): the learning
+# rate then gets reduced a few times -- smaller, finer steps -- before training gives up.
 
 # ---- Repos with known authorship, for `aicontrib evaluate-repo --all` ----------------
 # `path` is an absolute path to a local git clone; `expected_class` is human / co_authored / ai.
