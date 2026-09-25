@@ -25,13 +25,13 @@ git clone https://github.com/jeromeboivin/ai-contribution-detector.git
 cd ai-contribution-detector
 python -m venv .venv
 .venv\Scripts\activate
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install torch --index-url https://download.pytorch.org/whl/cu126
 pip install -e ".[dev]"
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 The last line must print **`True`** (it means your graphics card will be used). If it prints `False`, or
-any line shows an error, see the [detailed Windows setup](#windows-with-an-nvidia-gpu-recommended-for-a-real-training-run).
+any line shows an error, see [Troubleshooting](#troubleshooting).
 
 ### 2. Train the model (once)
 
@@ -72,6 +72,40 @@ Each new PowerShell window needs these two lines first, otherwise the `aicontrib
 cd path\to\ai-contribution-detector
 .venv\Scripts\activate
 ```
+
+### Getting the latest version
+
+```powershell
+git pull
+pip install -e ".[dev]"
+```
+
+## Troubleshooting
+
+**"Warning: You are sending unauthenticated requests to the HF Hub"** — harmless, ignore it. It only
+means downloads from Hugging Face aren't using an account.
+
+**The GPU check prints `False`** — PyTorch can't see your graphics card:
+1. Run `nvidia-smi`. If it's not found, install the latest driver from
+   [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx) and reboot.
+2. Reinstall the GPU build of PyTorch:
+   `pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cu126`
+
+**"PyTorch ... is too old -- version 2.6 or newer is required"**, or an error mentioning
+**`torch.load` / "CVE-2025-32434"** — PyTorch is older than 2.6 (the CUDA 12.1 build stops at 2.5.1).
+Upgrade it:
+`pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu126`
+
+**`aicontrib` is not recognized as a command** — the environment isn't active in this window. Run
+`.venv\Scripts\activate` from the project folder (see [above](#opening-powershell-again-later)).
+
+**PowerShell refuses to run `activate`** (execution policy error) — run
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then `activate` again.
+
+**"Code encoder running on: CPU" when you expected the GPU** — same fix as "The GPU check prints
+`False`" above. On CPU the full dataset takes days.
+
+**`embed` was interrupted** — just run `aicontrib embed` again; it resumes from its last checkpoint.
 
 ## How it works
 
@@ -208,18 +242,19 @@ only practical with GPU acceleration. These steps assume a fresh Windows machine
    ```
    If PowerShell refuses to run the activation script (execution policy error), run this once first:
    `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then retry the `activate` line.
-6. **Install a CUDA-enabled PyTorch build first**, matching your driver — check
-   [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/) for the exact command if
-   this one doesn't fit (Stable / Windows / Pip / Python / CUDA 12.x), e.g.:
+6. **Install a CUDA-enabled PyTorch build first** (it must be **PyTorch 2.6 or newer**):
    ```powershell
-   pip install torch --index-url https://download.pytorch.org/whl/cu121
+   pip install torch --index-url https://download.pytorch.org/whl/cu126
    ```
+   The CUDA 12.6 build works with any recent NVIDIA driver and has the newest PyTorch releases. Avoid the
+   `cu121` index: it stops at PyTorch 2.5.1, which can't load this project's encoder.
+   Plain `pip install torch` on Windows installs a CPU-only build — always use an `--index-url`.
 7. **Verify the GPU is actually visible to PyTorch** before going further:
    ```powershell
-   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
    ```
-   This must print `True` and your GPU's name. If it prints `False`, step 6 installed the wrong build —
-   redo it with the CUDA version matching your driver.
+   This must print a version of 2.6 or higher, `True`, and your GPU's name. If not, see
+   [Troubleshooting](#troubleshooting).
 8. **Install the project** (this won't touch the already-installed GPU build of `torch`, since it already
    satisfies the version requirement):
    ```powershell

@@ -15,13 +15,15 @@ from tqdm import tqdm
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from aicontrib.config import load_config
-from aicontrib.device import get_device
+from aicontrib.device import describe_device, get_device, require_supported_torch
 
 
 class CodeEmbedder:
     def __init__(self, cfg: dict):
+        require_supported_torch()
         self.cfg = cfg["embedding"]
         self.device = get_device()
+        print(f"Code encoder running on: {describe_device(self.device)}")
         self.tokenizer = AutoTokenizer.from_pretrained(self.cfg["model_name"], trust_remote_code=True)
         # codet5p-embedding's remote code predates transformers versions that stopped silently
         # defaulting missing config attributes -- T5Stack.__init__ now hard-fails on the config's
