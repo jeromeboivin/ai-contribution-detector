@@ -31,6 +31,7 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
         return cap is not None and counts[cls] >= cap
 
     counts: dict[str, int] = defaultdict(int)
+    empty_rows = 0
     seen_hashes: set[str] = set()
     out_dir = Path(cfg["paths"]["processed_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,9 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
             if all(cap_reached(c) for c in class_names):
                 break
             for code, cls in iter_source(source_cfg, out_name):
+                if not code or not code.strip():  # upstream data has a few rows with no code (e.g. CodeMirage)
+                    empty_rows += 1
+                    continue
                 if cls not in class_names or cap_reached(cls):
                     continue
                 digest = hashlib.sha256(code.encode("utf-8", errors="ignore")).hexdigest()
@@ -58,7 +62,8 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
                     break
         pbar.close()
 
-    print(f"[{out_name}] wrote {sum(counts.values())} rows, per-class counts: {dict(counts)}")
+    print(f"[{out_name}] wrote {sum(counts.values())} rows, per-class counts: {dict(counts)}, "
+          f"skipped {empty_rows} rows with no code")
     return out_path
 
 

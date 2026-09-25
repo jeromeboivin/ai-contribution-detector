@@ -70,6 +70,18 @@ def test_cap_stops_pulling_once_reached_across_sources(tmp_path, monkeypatch):
     assert {r["code"] for r in rows} == {"h1", "h2", "h3"}
 
 
+def test_rows_without_code_are_skipped(tmp_path, monkeypatch):
+    # CodeMirage's train split really contains rows whose code is None.
+    monkeypatch.setattr(
+        prepare,
+        "iter_source",
+        _fake_sources({"a": [(None, "ai"), ("   \n", "human"), ("real code", "human")]}),
+    )
+    cfg = _base_cfg(tmp_path, per_class_cap=None)
+    rows = _read_jsonl(prepare.prepare_split(cfg, "train"))
+    assert [r["code"] for r in rows] == ["real code"]
+
+
 def test_exact_duplicate_code_is_deduped_across_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(
         prepare,
