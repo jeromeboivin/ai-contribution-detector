@@ -1,10 +1,77 @@
 # ai-contribution-detector
 
-Classifies whether code was **written by hand**, **co-authored** (human + AI), or **fully AI-generated** —
-first at the snippet/file level, then applied to git commits as an approximation. Targets Python,
-JavaScript/TypeScript, C++, and C#. Runs on CPU or GPU (auto-detected) — the default config trains on the
-full dataset, which really wants a GPU; see [Setup](#setup) for a Windows+GPU walkthrough, or
-[Performance](#performance) for capping it down to run on CPU only.
+Tells you whether the code in a git repository was **written by hand**, **co-authored** with AI, or
+**fully AI-generated** — commit by commit, and as a month-by-month timeline over the repository's history.
+Works on Python, JavaScript/TypeScript, C++ and C# code.
+
+New here? Follow the **[Quick start](#quick-start-windows--nvidia-gpu)** below — no Python knowledge
+needed. Everything after it is reference material.
+
+## Quick start (Windows + NVIDIA GPU)
+
+**What you need:** a Windows PC with an NVIDIA graphics card, an internet connection, about 20 GB of free
+disk space, and these two free programs installed:
+
+- [Git](https://git-scm.com/download/win) — the default options are fine.
+- [Python 3.10 or newer](https://python.org/downloads) — on the first installer screen, tick
+  **"Add python.exe to PATH"**.
+
+### 1. Install (once)
+
+Open **PowerShell** (Start menu → type "PowerShell") and paste these lines:
+
+```powershell
+git clone https://github.com/jeromeboivin/ai-contribution-detector.git
+cd ai-contribution-detector
+python -m venv .venv
+.venv\Scripts\activate
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[dev]"
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+The last line must print **`True`** (it means your graphics card will be used). If it prints `False`, or
+any line shows an error, see the [detailed Windows setup](#windows-with-an-nvidia-gpu-recommended-for-a-real-training-run).
+
+### 2. Train the model (once)
+
+Run these four commands, one after the other:
+
+```powershell
+aicontrib prepare
+aicontrib embed
+aicontrib train
+aicontrib evaluate
+```
+
+- This takes a while — several hours depending on your graphics card. **`embed` is the long one.**
+- If anything interrupts it (closed window, reboot), just run the same command again: it resumes where it
+  stopped.
+- While `train` runs, open **http://127.0.0.1:8765** in a browser on the same PC to watch progress live.
+- `evaluate` prints how accurate the finished model is. The model itself is saved as
+  `models\mlp_classifier.pt`.
+
+### 3. Analyze a repository
+
+Point it at any git repository on your PC (keep the quotes if the path contains spaces):
+
+```powershell
+aicontrib report "C:\path\to\some\repository"
+```
+
+This creates a file named `<repository-name>-authorship-timeline.html` in the current folder —
+double-click it to see, month by month, the share of human, co-authored and AI-written commits. Only
+commits that change code are counted; commits touching only other files (XML, images, documents,
+proprietary formats…) are ignored. More in [Authorship timeline report](#authorship-timeline-report).
+
+### Opening PowerShell again later?
+
+Each new PowerShell window needs these two lines first, otherwise the `aicontrib` command isn't found:
+
+```powershell
+cd path\to\ai-contribution-detector
+.venv\Scripts\activate
+```
 
 ## How it works
 
