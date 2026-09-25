@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from aicontrib.config import load_config
 from aicontrib.device import get_device
 from aicontrib.model.classifier import MLPClassifier
+from aicontrib.model.evaluate import load_checkpoint
 from aicontrib.monitor import MetricsLogger, serve_dashboard
 
 
@@ -40,7 +41,28 @@ def _evaluate_loader(model: nn.Module, loader: DataLoader, device: torch.device)
     return f1_score(all_labels, all_preds, average="macro")
 
 
-def train(config_path: str | None = None) -> Path:
+def _load_for_resume(checkpoint_path: Path, device: torch.device, cfg: dict, input_dim: int,
+                     representation: str) -> tuple[MLPClassifier, dict]:
+    """The saved model and its checkpoint, if it can continue training on the current embeddings."""
+    if not checkpoint_path.exists():
+        raise ValueError(f"Nothing to resume: no model at {checkpoint_path}. Run `aicontrib train` first.")
+    # Refuses other classes or another embedding representation.
+    model = load_checkpoint(checkpoint_path, device, representation=representation, class_names=cfg["classes"]["names"])
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    mismatches = [f"{name}: saved {saved}, now {now}" for name, saved, now in (
+        ("embedding size", ckpt["input_dim"], input_dim),
+        ("model.hidden_dims", ckpt["hidden_dims"], cfg["model"]["hidden_dims"]),
+        ("model.dropout", ckpt["dropout"], cfg["model"]["dropout"]),
+    ) if saved != now]
+    if mismatches:
+        raise ValueError(f"Can't resume from {checkpoint_path} ({'; '.join(mismatches)}). "
+                         "Run `aicontrib train` without --resume to start over.")
+    return model, ckpt
+
+
+def train(config_path: str | None = None, resume: bool = False) -> Path:
+    """resume: continue from the saved best model (weights, optimizer state and learning rate) instead of
+    starting over -- e.g. after raising early_stopping_patience. training.epochs then counts from there."""
     cfg = load_config(config_path) if config_path else load_config()
     device = get_device()
     torch.manual_seed(cfg["training"]["seed"])
@@ -58,40 +80,60 @@ def train(config_path: str | None = None) -> Path:
             raise ValueError(f"The {split} embeddings have labels for more classes than classes.names "
                              f"{cfg['classes']['names']} -- they were prepared for other classes. "
                              "Re-run `aicontrib prepare` and `aicontrib embed`.")
-    model = MLPClassifier(
-        input_dim=input_dim,
-        hidden_dims=cfg["model"]["hidden_dims"],
-        num_classes=num_classes,
-        dropout=cfg["model"]["dropout"],
-    )
-    model.fit_input_scaling(train_ds.tensors[0])
-    model.to(device)
     representation = _representation(cfg, "train")
     if _representation(cfg, "validation") != representation:
         raise ValueError("train and validation embeddings use different representations -- re-run `aicontrib embed`")
 
+    models_dir = Path(cfg["paths"]["models_dir"])
+    models_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = models_dir / "mlp_classifier.pt"
     tcfg = cfg["training"]
+
+    if resume:
+        model, ckpt = _load_for_resume(checkpoint_path, device, cfg, input_dim, representation)
+    else:
+        model = MLPClassifier(
+            input_dim=input_dim,
+            hidden_dims=cfg["model"]["hidden_dims"],
+            num_classes=num_classes,
+            dropout=cfg["model"]["dropout"],
+        )
+        model.fit_input_scaling(train_ds.tensors[0])
+        model.to(device)
+        if checkpoint_path.exists():
+            print(f"Training from scratch: the model saved at {checkpoint_path} will be replaced "
+                  "(`aicontrib train --resume` continues from it instead).")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
+    start_epoch, best_f1 = 0, -1.0
+    if resume:
+        if "optimizer" in ckpt:  # checkpoints of older versions: weights only, fresh optimizer at training.lr
+            optimizer.load_state_dict(ckpt["optimizer"])
+        start_epoch = ckpt.get("epoch", 0)
+        # The bar to beat, measured on the current validation data.
+        best_f1 = _evaluate_loader(model, val_loader, device)
+        print(f"Resuming from epoch {start_epoch}: validation macro-F1 {best_f1:.4f}, "
+              f"learning rate {optimizer.param_groups[0]['lr']:.2e}")
+
     # Halve the learning rate when validation macro-F1 stalls: smaller steps often find further gains
     # before early stopping gives up. threshold=0 -> same "strictly better" rule as early stopping.
+    # Built fresh on resume too, so changed lr_reduce_* settings apply.
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=tcfg["lr_reduce_factor"], patience=tcfg["lr_reduce_patience"],
         min_lr=tcfg["min_lr"], threshold=0.0,
     )
+    if resume:
+        scheduler.best = best_f1
     criterion = nn.CrossEntropyLoss()
 
-    best_f1 = -1.0
     epochs_without_improvement = 0
-    models_dir = Path(cfg["paths"]["models_dir"])
-    models_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = models_dir / "mlp_classifier.pt"
-
-    metrics_logger = MetricsLogger(models_dir / "metrics.jsonl")
+    # Resuming keeps the dashboard's history up to the resumed epoch; epochs after it are replaced.
+    metrics_logger = MetricsLogger(models_dir / "metrics.jsonl", keep_until_epoch=start_epoch if resume else None)
     port = cfg["monitor"]["port"]
     serve_dashboard(metrics_logger.path, port, background=True)
     print(f"Training dashboard: http://127.0.0.1:{port}")
 
-    for epoch in range(tcfg["epochs"]):
+    for epoch in range(start_epoch, start_epoch + tcfg["epochs"]):
         model.train()
         total_loss = 0.0
         lr = optimizer.param_groups[0]["lr"]
@@ -124,6 +166,10 @@ def train(config_path: str | None = None) -> Path:
                     "dropout": cfg["model"]["dropout"],
                     "representation": representation,
                     "class_names": cfg["classes"]["names"],
+                    # For --resume:
+                    "epoch": epoch + 1,
+                    "val_macro_f1": val_f1,
+                    "optimizer": optimizer.state_dict(),
                 },
                 checkpoint_path,
             )

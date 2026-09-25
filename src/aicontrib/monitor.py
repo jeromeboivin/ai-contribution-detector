@@ -21,12 +21,17 @@ KNOWN_REPO_RESULTS_FILENAME = "known_repo_results.jsonl"
 
 class MetricsLogger:
     """Appends one JSON line per epoch. Truncates on construction so stale
-    metrics from a previous run don't leak into a fresh dashboard."""
+    metrics from a previous run don't leak into a fresh dashboard -- or, when
+    training resumes, keeps the epochs up to keep_until_epoch."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, keep_until_epoch: int | None = None):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text("")
+        kept = []
+        if keep_until_epoch and self.path.exists():
+            kept = [line for line in self.path.read_text().splitlines()
+                    if line.strip() and json.loads(line).get("epoch", 0) <= keep_until_epoch]
+        self.path.write_text("".join(line + "\n" for line in kept))
 
     def log(self, **fields) -> None:
         with open(self.path, "a") as f:

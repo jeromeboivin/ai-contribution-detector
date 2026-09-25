@@ -41,6 +41,8 @@
 # Only `aicontrib train` needs re-running after changing these (then `evaluate`); the
 # embeddings are reused. Each epoch takes seconds, and only the best epoch (highest
 # validation macro-F1) is saved, so training longer never makes the saved model worse.
+# `aicontrib train --resume` continues from the saved best model instead of starting over
+# (a plain `aicontrib train` replaces it) -- e.g. after raising early_stopping_patience.
 # Watch the validation macro-F1 chart at http://127.0.0.1:8765 while training:
 #   - still rising when training stops   -> raise early_stopping_patience
 #   - jumping up and down a lot           -> lower lr (e.g. 0.0003)

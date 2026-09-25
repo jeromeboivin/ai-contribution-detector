@@ -114,7 +114,11 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("prepare", help="Stream and cache the labeled/capped train/val/test JSONL splits")
     embed_parser = subparsers.add_parser("embed", help="Compute and cache embeddings for each split")
     embed_parser.add_argument("--force", action="store_true", help="Recompute even if cached")
-    subparsers.add_parser("train", help="Train the MLP classifier on cached embeddings")
+    train_parser = subparsers.add_parser("train", help="Train the MLP classifier on cached embeddings")
+    train_parser.add_argument(
+        "--resume", action="store_true",
+        help="Continue from the saved best model instead of starting over (e.g. after raising early_stopping_patience)",
+    )
     subparsers.add_parser("evaluate", help="Evaluate the trained classifier on the test split")
     subparsers.add_parser(
         "monitor", help="Serve the training dashboard standalone (train already starts one automatically)"
@@ -197,7 +201,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "train":
         from aicontrib.model.train import train
 
-        train()
+        train(resume=args.resume)
     elif args.command == "evaluate":
         from aicontrib.model.evaluate import evaluate
 

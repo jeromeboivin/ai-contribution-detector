@@ -64,3 +64,67 @@ def test_embeddings_prepared_for_other_classes_are_refused(tmp_path):
 
     with pytest.raises(ValueError, match="Re-run `aicontrib prepare`"):
         train(str(config_path))
+
+
+def _setup_run(tmp_path, **training):
+    rng = np.random.default_rng(0)
+    emb = tmp_path / "embeddings"
+    emb.mkdir(exist_ok=True)
+    for split, n in (("train", 90), ("validation", 30)):
+        x, y = _separable(n, rng)
+        np.savez(emb / f"{split}.npz", embeddings=x, labels=y)
+    cfg = load_config()
+    cfg["classes"]["names"] = ["human", "co_authored", "ai"]
+    cfg["paths"]["embeddings_dir"] = str(emb)
+    cfg["paths"]["models_dir"] = str(tmp_path / "models")
+    cfg["monitor"]["port"] = 0
+    cfg["training"].update(epochs=100, lr=0.001, lr_reduce_patience=2, **training)
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text(yaml.safe_dump(cfg))
+    return str(config_path)
+
+
+def _epochs_logged(tmp_path):
+    return [json.loads(line)["epoch"] for line in (tmp_path / "models" / "metrics.jsonl").read_text().splitlines()]
+
+
+def test_resume_continues_from_the_best_epoch(tmp_path, capsys):
+    import torch
+
+    train(_setup_run(tmp_path, early_stopping_patience=3))
+    first = torch.load(tmp_path / "models" / "mlp_classifier.pt")
+    best_epoch = first["epoch"]
+    assert _epochs_logged(tmp_path)[-1] == best_epoch + 3
+
+    train(_setup_run(tmp_path, early_stopping_patience=5), resume=True)
+
+    assert f"Resuming from epoch {best_epoch}" in capsys.readouterr().out
+    epochs = _epochs_logged(tmp_path)
+    assert epochs == list(range(1, len(epochs) + 1))  # history up to the best epoch kept, then continued
+    assert epochs[-1] >= best_epoch + 5
+    resumed = torch.load(tmp_path / "models" / "mlp_classifier.pt")
+    assert resumed["epoch"] >= best_epoch
+    assert resumed["val_macro_f1"] >= first["val_macro_f1"]
+
+
+def test_resume_refuses_a_model_of_another_shape(tmp_path):
+    train(_setup_run(tmp_path, early_stopping_patience=2))
+    cfg = yaml.safe_load((tmp_path / "cfg.yaml").read_text())
+    cfg["model"]["hidden_dims"] = [32]
+    (tmp_path / "cfg.yaml").write_text(yaml.safe_dump(cfg))
+
+    with pytest.raises(ValueError, match="model.hidden_dims"):
+        train(str(tmp_path / "cfg.yaml"), resume=True)
+
+
+def test_resume_without_a_saved_model_says_so(tmp_path):
+    with pytest.raises(ValueError, match="Nothing to resume"):
+        train(_setup_run(tmp_path), resume=True)
+
+
+def test_training_from_scratch_warns_it_replaces_the_saved_model(tmp_path, capsys):
+    config_path = _setup_run(tmp_path, early_stopping_patience=2)
+    train(config_path)
+    assert "will be replaced" not in capsys.readouterr().out
+    train(config_path)
+    assert "will be replaced" in capsys.readouterr().out

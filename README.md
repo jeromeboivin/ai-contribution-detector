@@ -147,8 +147,10 @@ progress made on the full dataset is discarded when you change the size.
 
 **Training stops earlier than you'd like** — it stops after `early_stopping_patience` epochs (default 20)
 without a better validation macro-F1, halving the learning rate along the way. Raise the patience in
-`configs/local.yaml`, e.g. `training: {early_stopping_patience: 40}`, and re-run `aicontrib train` only
-(the embeddings are reused, so it takes minutes). The `training:` section of
+`configs/local.yaml`, e.g. `training: {early_stopping_patience: 40}`, then run `aicontrib train --resume`:
+it continues from the saved best model (weights, learning rate, dashboard history) instead of starting
+over. A plain `aicontrib train` starts from scratch and replaces the saved model — what you want after
+re-running `prepare` or `embed`. Either way the embeddings are reused, so it takes minutes. The `training:` section of
 `configs/local.example.yaml` explains each setting and how to read the dashboard to choose them.
 
 **`CUDA out of memory` during `embed`** — batches already shrink automatically when this happens; if it
