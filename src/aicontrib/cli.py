@@ -62,6 +62,26 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         print()
 
 
+def _print_binoculars(result: dict) -> None:
+    print(f"\nBinoculars ({result['observer']} / {result['performer']}), whole files at HEAD. "
+          "Lower score = more AI-like.")
+    has_mlp = any(r["mlp_mean_p_ai"] is not None for r in result["repos"])
+    print(f"{'repo':<24}{'expected':<13}{'files':>6}{'score p25':>11}{'median':>9}{'p75':>9}"
+          + (f"{'MLP mean P(ai)':>17}" if has_mlp else ""))
+    for r in result["repos"]:
+        q = r["binoculars_quartiles"] or [float("nan")] * 3
+        mlp = f"{r['mlp_mean_p_ai']:>17.3f}" if r["mlp_mean_p_ai"] is not None else ""
+        print(f"{r['name']:<24}{r['expected_class']:<13}{len(r['files']):>6}{q[0]:>11.3f}{q[1]:>9.3f}{q[2]:>9.3f}{mlp}")
+    if not result["pairs"]:
+        print("\nNo AUC: known_repos needs at least one `human` and one `ai` repo.")
+    else:
+        print("\nSeparation, file level (AUC: 0.5 = no signal, 1.0 = every AI file ranks above every human file):")
+        for pair in result["pairs"]:
+            mlp = f", MLP classifier {pair['mlp_auc']:.3f}" if "mlp_auc" in pair else ""
+            print(f"  {pair['human']} (human) vs {pair['ai']} (ai): Binoculars {pair['binoculars_auc']:.3f}{mlp}")
+    print(f"\nPer-file scores: {result['results_path']}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="aicontrib")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -103,6 +123,14 @@ def main(argv: list[str] | None = None) -> None:
     eval_repo_parser.add_argument(
         "--added-files-only", action="store_true",
         help="Score only files each commit adds (whole files, like the training data); skip commits that add none",
+    )
+
+    binoculars_parser = subparsers.add_parser(
+        "binoculars",
+        help="(Prototype) Zero-shot Binoculars detector: how well it separates your known_repos, vs the MLP",
+    )
+    binoculars_parser.add_argument(
+        "--files", type=int, help="Files to sample per repo (default: binoculars.files_per_repo in the config)"
     )
 
     report_parser = subparsers.add_parser(
@@ -193,6 +221,14 @@ def main(argv: list[str] | None = None) -> None:
             except Exception as exc:  # noqa: BLE001 - one bad entry (e.g. missing local path) shouldn't abort the rest
                 print(f"[{name or repo_path}] skipped: {exc}")
                 print()
+    elif args.command == "binoculars":
+        from aicontrib.binoculars import evaluate_binoculars
+        from aicontrib.config import load_config
+
+        cfg = load_config()
+        if not cfg.get("known_repos"):
+            sys.exit("No known_repos configured -- add them to configs/local.yaml (see README 'Real-world validation').")
+        _print_binoculars(evaluate_binoculars(cfg, files_per_repo=args.files))
     elif args.command == "report":
         import subprocess
         from pathlib import Path

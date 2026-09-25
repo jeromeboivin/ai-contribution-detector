@@ -550,6 +550,28 @@ The automated `pytest` suite only checks the `evaluate-repo` plumbing against a 
 (`tests/test_known_repo_eval.py`) — it doesn't depend on `configs/local.yaml` or any specific machine's
 paths.
 
+### Zero-shot prototype: Binoculars
+
+```bash
+aicontrib binoculars
+```
+
+An experiment, not part of the main pipeline. [Binoculars](https://arxiv.org/abs/2401.12070) needs no
+training data. Two small code models read each file: a base model and its instruction-tuned version
+(by default Qwen2.5-Coder-0.5B and -Instruct, ~1 GB each, downloaded on first run; they fit a 4 GB GPU).
+Its score compares how surprising the code is to one model with how surprising the other model's
+predictions are to it. AI-generated code scores **lower**. The TypeScript gap and the older AI models in
+the training data don't apply to it the same way, so it tests whether any signal exists on your repos.
+
+It samples up to 200 whole files at HEAD from each `known_repos` entry, skipping vendored and generated
+paths (`binoculars.exclude` in the config) and files under 64 tokens. It prints each repo's score
+distribution and, for every human/AI pair of repos, the **AUC**: the chance that a random file from the
+AI repo looks more AI-like than a random file from the human repo (0.5 = no signal, 1.0 = perfect). If a
+trained MLP exists, its AUC on the same files is printed next to it, so the two are compared on equal
+terms. Per-file scores go to `models/binoculars_results.json`.
+
+The paper's fixed threshold was fitted for other models and doesn't carry over; the AUC doesn't need one.
+
 ## Performance
 
 The embedding step (`aicontrib embed`) is the only slow part -- it's a forward pass through a 110M-param

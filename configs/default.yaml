@@ -92,6 +92,18 @@ model:
 monitor:
   port: 8765
 
+# Zero-shot detector prototype (`aicontrib binoculars`, see README). Two models sharing a tokenizer:
+# a base model (observer) and its instruction-tuned version (performer). The 0.5B pair fits a 4 GB GPU.
+binoculars:
+  observer: "Qwen/Qwen2.5-Coder-0.5B"
+  performer: "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+  max_tokens: 512       # longer files are scored on their first 512 tokens
+  min_tokens: 64        # shorter files are skipped: too little text for a stable score
+  files_per_repo: 200   # sampled evenly from each known repo's files at HEAD
+  # Vendored and generated code isn't written by the repo's authors (fnmatch patterns on repo paths).
+  exclude: ["vendor/*", "*/vendor/*", "node_modules/*", "*/node_modules/*", "dist/*", "build/*",
+            "*.min.js", "*.d.ts"]
+
 training:
   epochs: 200        # upper bound; early stopping normally ends training well before this
   batch_size: 64
