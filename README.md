@@ -129,9 +129,10 @@ Upgrade it:
 
 **`embed` was interrupted** — just run `aicontrib embed` again; it resumes from its last checkpoint.
 
-**"Fatal Python error: PyGILState_Release" at the very end of `prepare`** — an occasional shutdown glitch
-in the dataset-streaming library, after the work is finished. If the lines before it say `wrote ...
-rows` for each split, the output is complete; carry on with `embed`.
+**"Fatal Python error: PyGILState_Release" at the very end of `prepare`** — fixed in the current
+version; update with the two lines under [Getting the latest version](#getting-the-latest-version)
+(the `pip install` line matters: it refreshes the `aicontrib` command). It was a shutdown crash in the
+dataset-streaming library after the work had finished, so output written before it is complete.
 
 **"Unknown language ... Valid names: ..."** — a typo in `dataset.languages` in `configs/local.yaml`. Use
 the names listed. TypeScript isn't one of them: it's not in the training data, and TypeScript files are
@@ -286,9 +287,12 @@ How these were obtained (full figures in `src/aicontrib/data/language_stats.json
   treat the C and C++ rows as approximate; their sum is reliable.
 - Your four target languages (Python, JavaScript, C++, C#) make up 52% of the data.
 
-The per-row labels ship with the code (`src/aicontrib/data/aicd_t3_languages.npz`, labels only, tied to
-the pinned `hf_revision` of AICD-Bench). Maintainers can rebuild them and this table with
-`aicontrib language-census` (~15 minutes; streams DroidCollection, AICD-Bench and CodeMirage).
+**The per-row language labels are included in the repository** (`src/aicontrib/data/aicd_t3_languages.npz`,
+~0.9 MB, labels only — no code) and `prepare` uses them automatically: nobody needs to regenerate them,
+and language filtering needs no extra download. They're tied to the AICD-Bench revision pinned in
+`configs/default.yaml` (`hf_revision`), and `prepare` checks that the rows still line up as it reads
+them. The only reason to rebuild them is changing that pinned revision, which is what
+`aicontrib language-census` is for (maintainers; ~15 minutes).
 
 ### Choosing which languages to train on
 

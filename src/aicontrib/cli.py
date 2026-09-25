@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import traceback
 
 
 def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: str | None, samples: int, as_json: bool) -> None:
@@ -193,5 +195,35 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Report written to {out}")
 
 
+def run() -> None:
+    """Process entry point (the `aicontrib` command and `python -m aicontrib`).
+
+    Ends with os._exit, skipping interpreter finalization: when a Hugging Face `datasets`
+    stream is abandoned early (prepare stops once the class caps are reached; audit after a
+    sample), a native read-ahead thread is still running, and finalizing with it alive aborts
+    the process ("Fatal Python error: PyGILState_Release", exit code 134) -- after the work is
+    done, but alarming and a failing exit code. Closing the stream doesn't stop that thread.
+    All our output files are closed by their `with` blocks before we get here.
+    """
+    code = 0
+    try:
+        main()
+    except SystemExit as exc:  # argparse errors and our sys.exit("message") calls
+        if isinstance(exc.code, int) or exc.code is None:
+            code = exc.code or 0
+        else:
+            print(exc.code, file=sys.stderr)
+            code = 1
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        code = 130
+    except BaseException:  # noqa: BLE001 - report it ourselves, then exit without finalization
+        traceback.print_exc()
+        code = 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    main()
+    run()

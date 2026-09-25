@@ -1,4 +1,4 @@
-from aicontrib.cli import main
+from aicontrib.cli import run
 
 if __name__ == "__main__":
-    main()
+    run()

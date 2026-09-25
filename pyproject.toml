@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-aicontrib = "aicontrib.cli:main"
+aicontrib = "aicontrib.cli:run"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
