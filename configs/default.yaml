@@ -73,12 +73,17 @@ paths:
 embedding:
   model_name: "Salesforce/codet5p-110m-embedding"
   max_length: 512
-  batch_size: 32
+  batch_size: 32   # samples per batch when classifying commits (report / evaluate-repo)
   dim: 256
-  # Write a resume checkpoint every N batches (~10 batches ~= 3min risk window at the
-  # ~17-21s/batch observed on this machine). Killing the process mid-split loses at
-  # most this many batches' worth of work instead of the whole split. See embed.py.
-  checkpoint_every_batches: 10
+  # `embed` sorts samples longest first and batches them by token count (little padding waste).
+  # auto: sized from GPU memory (8,192-65,536 tokens; halved automatically on out-of-memory),
+  # 16,384 on CPU. Lower it if your GPU runs out of memory anyway.
+  max_tokens_per_batch: auto
+  # auto: on a GPU, use bf16 (or fp16 if the GPU lacks bf16) when a startup check shows it matches
+  # fp32 on that GPU, else fp32. fp32 / bf16 / fp16 force a choice. The CPU always uses fp32.
+  precision: auto
+  # Save resume progress at least this often. Stopping `embed` loses at most this much work.
+  checkpoint_every_seconds: 120
 
 model:
   hidden_dims: [128, 64]

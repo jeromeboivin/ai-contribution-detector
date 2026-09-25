@@ -5,72 +5,91 @@ import pytest
 
 from aicontrib.config import load_config
 
+# Different lengths on purpose: embed_split processes them longest first, so these tests also
+# check that results land back in the original row order.
+CODES = [
+    "x = 1\n",
+    "def add(a, b):\n    return a + b\n" * 6,
+    "print('hi')\n",
+    "class Box:\n    def __init__(self, v):\n        self.v = v\n" * 3,
+    "import os\nprint(os.getcwd())\n",
+    "for i in range(10):\n    print(i * i)\n" * 9,
+]
 
-@pytest.fixture
+
+@pytest.fixture(scope="module")
 def embedder():
-    cfg = load_config()
     try:
         from aicontrib.features.embed import CodeEmbedder
 
-        return CodeEmbedder(cfg)
+        return CodeEmbedder(load_config())
     except Exception as exc:  # noqa: BLE001 - network/model download can fail offline
-        pytest.skip(f"encoder unavailable, skipping checkpoint smoke test: {exc}")
+        pytest.skip(f"encoder unavailable, skipping checkpoint tests: {exc}")
 
 
-def _write_processed(path, n):
-    with open(path, "w") as f:
-        for i in range(n):
-            f.write(json.dumps({"code": f"def f{i}():\n    return {i}\n", "label": i % 3}) + "\n")
-
-
-def _cfg(tmp_path):
+def _setup(tmp_path, max_tokens=64):
     cfg = load_config()
-    cfg["paths"] = dict(cfg["paths"])
     cfg["paths"]["processed_dir"] = str(tmp_path / "processed")
     cfg["paths"]["embeddings_dir"] = str(tmp_path / "embeddings")
-    cfg["embedding"] = dict(cfg["embedding"])
-    cfg["embedding"]["batch_size"] = 2
-    cfg["embedding"]["checkpoint_every_batches"] = 1
+    cfg["embedding"]["max_tokens_per_batch"] = max_tokens  # small, so several batches are needed
+    cfg["embedding"]["checkpoint_every_seconds"] = 0  # save after every batch
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "embeddings").mkdir()
+    with open(tmp_path / "processed" / "train.jsonl", "w", encoding="utf-8") as f:
+        for i, code in enumerate(CODES):
+            f.write(json.dumps({"code": code, "label": i % 3}) + "\n")
     return cfg
 
 
-def test_resumes_from_matching_checkpoint(tmp_path, embedder):
+def _cosines(a, b):
+    return (a * b).sum(1) / (np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1))
+
+
+def test_output_is_in_original_row_order(tmp_path, embedder):
     from aicontrib.features.embed import embed_split
 
-    cfg = _cfg(tmp_path)
-    processed_dir = tmp_path / "processed"
-    embeddings_dir = tmp_path / "embeddings"
-    processed_dir.mkdir()
-    embeddings_dir.mkdir()
-    _write_processed(processed_dir / "train.jsonl", 6)
-
-    labels = np.array([i % 3 for i in range(6)], dtype=np.int64)
-    sentinel = np.full((3, cfg["embedding"]["dim"]), -1.0, dtype=np.float32)
-    np.savez(embeddings_dir / "train.partial.npz", embeddings=sentinel, labels=labels, n_done=3)
-
-    out_path = embed_split(cfg, embedder, "train")
-    data = np.load(out_path)
-
-    assert np.array_equal(data["embeddings"][:3], sentinel)  # came from checkpoint, not recomputed
-    assert not np.array_equal(data["embeddings"][3:], np.zeros((3, cfg["embedding"]["dim"])))  # actually embedded
-    assert not (embeddings_dir / "train.partial.npz").exists()  # checkpoint cleaned up on completion
+    cfg = _setup(tmp_path)
+    data = np.load(embed_split(cfg, embedder, "train"))
+    one_by_one = np.concatenate([embedder.embed_batch([c]) for c in CODES])
+    assert _cosines(data["embeddings"], one_by_one).min() > 0.9999
+    assert data["labels"].tolist() == [i % 3 for i in range(len(CODES))]
 
 
-def test_discards_checkpoint_with_mismatched_labels(tmp_path, embedder):
+def test_interrupted_run_resumes_and_matches_an_uninterrupted_one(tmp_path, embedder, monkeypatch):
+    from aicontrib.features import embed
+
+    cfg = _setup(tmp_path)
+    real = embed.CodeEmbedder.embed_encoded
+    calls = {"n": 0}
+
+    def crash_after_two_batches(self, features):
+        calls["n"] += 1
+        if calls["n"] > 2:
+            raise KeyboardInterrupt
+        return real(self, features)
+
+    monkeypatch.setattr(embed.CodeEmbedder, "embed_encoded", crash_after_two_batches)
+    with pytest.raises(KeyboardInterrupt):
+        embed.embed_split(cfg, embedder, "train")
+    partial = tmp_path / "embeddings" / "train.partial"
+    assert len(list(partial.glob("shard-*.npz"))) == 2
+
+    monkeypatch.setattr(embed.CodeEmbedder, "embed_encoded", real)
+    resumed = np.load(embed.embed_split(cfg, embedder, "train"))["embeddings"]
+    one_by_one = np.concatenate([embedder.embed_batch([c]) for c in CODES])
+    assert _cosines(resumed, one_by_one).min() > 0.9999
+    assert not partial.exists()  # cleaned up once the split is complete
+
+
+def test_checkpoint_from_different_data_is_discarded(tmp_path, embedder):
     from aicontrib.features.embed import embed_split
 
-    cfg = _cfg(tmp_path)
-    processed_dir = tmp_path / "processed"
-    embeddings_dir = tmp_path / "embeddings"
-    processed_dir.mkdir()
-    embeddings_dir.mkdir()
-    _write_processed(processed_dir / "train.jsonl", 4)
+    cfg = _setup(tmp_path)
+    partial = tmp_path / "embeddings" / "train.partial"
+    partial.mkdir()
+    (partial / "meta.json").write_text(json.dumps({"data_hash": "some other data"}))
+    sentinel = np.full((1, cfg["embedding"]["dim"]), 7.0, dtype=np.float32)
+    np.savez(partial / "shard-00000.npz", positions=np.array([0]), embeddings=sentinel)
 
-    wrong_labels = np.array([9, 9, 9, 9], dtype=np.int64)
-    sentinel = np.full((2, cfg["embedding"]["dim"]), -1.0, dtype=np.float32)
-    np.savez(embeddings_dir / "train.partial.npz", embeddings=sentinel, labels=wrong_labels, n_done=2)
-
-    out_path = embed_split(cfg, embedder, "train")
-    data = np.load(out_path)
-
-    assert not np.array_equal(data["embeddings"][:2], sentinel)  # stale checkpoint was ignored
+    data = np.load(embed_split(cfg, embedder, "train"))
+    assert not np.allclose(data["embeddings"][0], 7.0)  # stale shard ignored, row 0 really embedded

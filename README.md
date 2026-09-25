@@ -139,9 +139,17 @@ the names listed. TypeScript isn't one of them: it's not in the training data, a
 analysed as JavaScript.
 
 **`embed` shows an estimate of many hours** — its estimate only covers the split it's working on
-(train, then validation, then test), so the total is longer still. Stop it with Ctrl+C, use a smaller
-dataset (see step 2 of the [Quick start](#2-train-the-model-once)), then run `aicontrib prepare` and
-`aicontrib embed` again. The progress made on the full dataset is discarded when you change the size.
+(train, then validation, then test), and it starts pessimistic because the longest samples go first.
+To go faster, stop it with Ctrl+C, use a smaller dataset (see step 2 of the
+[Quick start](#2-train-the-model-once)), then run `aicontrib prepare` and `aicontrib embed` again. The
+progress made on the full dataset is discarded when you change the size.
+
+**`CUDA out of memory` during `embed`** — batches already shrink automatically when this happens; if it
+still fails, set a smaller batch in `configs/local.yaml`, e.g.
+`embedding: {max_tokens_per_batch: 8192}`, and run `aicontrib embed` again (it resumes).
+
+**`Precision: fp32 (bf16 drifted ...)`** — half precision didn't reproduce full precision on your GPU, so
+`embed` chose the safe, slower option. Nothing to do.
 
 ## How it works
 
@@ -529,12 +537,27 @@ transformer for every row, and the MLP training itself is fast regardless of har
 cached. `per_class_cap` defaults to `null` (no cap): full AICD-Bench T3 + CodeMirage is ~2.3M rows
 across splits (train ~1.05M, validation ~0.2M, test ~1.06M).
 
-Measured embedding throughput at the default batch size:
+How `embed` keeps this manageable (none of it changes the embeddings — the tests check that):
 
-| Hardware | Rows/sec | Full dataset | 10,000 / 1,000 / 1,000 per class (~36K rows) |
+- **Longest samples first, batched by token count.** Batches hold samples of similar length, so almost
+  no compute is wasted padding short snippets up to the longest one: on real AICD-Bench samples this
+  cuts the work from 1.81× to 1.05× of the useful tokens, a **1.55× speedup measured on CPU**. Batch
+  size follows GPU memory (`embedding.max_tokens_per_batch: auto`) and halves itself on out-of-memory.
+- **Half precision on GPU, checked first.** At startup `embed` compares bfloat16 (or float16) against
+  full precision on a few samples *on your GPU* and prints e.g. `Precision: bf16 (matches fp32 on this
+  GPU: min cosine similarity 0.99998)`; if it doesn't match, it stays in fp32. Typically 2–3× on
+  recent NVIDIA cards (not measured here).
+- **Cheap checkpoints.** Progress is saved every `embedding.checkpoint_every_seconds` (default 120)
+  as small append-only files, instead of rewriting one ever-growing file.
+
+The time estimate starts pessimistic (the longest samples go first) and improves as the run goes on.
+
+Measured embedding throughput:
+
+| Hardware | Samples/sec | Full dataset | 10,000 / 1,000 / 1,000 per class (~36K samples) |
 |---|---|---|---|
-| 8-core CPU | ~1.6 | ~2 weeks | ~6 hours |
-| Windows desktop GPU | ~10 | ~65 hours | ~1 hour |
+| 8-core CPU, current version | ~2.3 | ~12 days | ~4 hours |
+| Windows desktop GPU, before these speedups | ~10 | ~65 hours | ~1 hour |
 
 Runtime scales linearly with row count. To cap it, set `per_class_cap` in `configs/local.yaml` (see
 `configs/local.example.yaml` and step 2 of the [Quick start](#2-train-the-model-once)) rather than in
@@ -542,11 +565,11 @@ Runtime scales linearly with row count. To cap it, set `per_class_cap` in `confi
 not (CodeMirage alone is ~140K AI vs 7K human samples).
 
 **Interrupting and resuming.** `aicontrib embed` is safe to stop (Ctrl-C, closing the terminal, a reboot)
-and restart at any point -- it checkpoints to `data/embeddings/{split}.partial.npz` every
-`embedding.checkpoint_every_batches` batches (default 10) and picks back up from there instead of
-recomputing the split from scratch. The checkpoint is validated against the current `data/processed/*.jsonl`
-content before being trusted, so re-running `aicontrib prepare` with different settings correctly discards
-a stale checkpoint rather than silently mixing old and new data. `aicontrib prepare` and `aicontrib train`
+and restart at any point -- finished samples are saved under `data/embeddings/{split}.partial/` at least
+every `embedding.checkpoint_every_seconds` and skipped on the next run, so you lose at most that much
+work. The saved progress is tied to a hash of the current `data/processed/*.jsonl`, so re-running
+`aicontrib prepare` with different settings correctly discards it rather than silently mixing old and
+new data. `aicontrib prepare` and `aicontrib train`
 are fast enough end-to-end that they simply restart if interrupted -- only the embedding step's
 per-split runtime (up to hours) makes checkpointing worthwhile.
 
