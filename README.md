@@ -340,7 +340,7 @@ AIGCodeSet). TypeScript comes from a third source you build yourself:
 ### Real-repository data: agent-signed commits
 
 ```bash
-aicontrib build-agent-commits                 # about 80 repositories; try --max-repos 3 first
+aicontrib build-agent-commits                 # 185 repositories, about an hour; try --max-repos 3 first
 ```
 
 Benchmark snippets don't look like code in real repositories, and that gap dominates the errors on real
@@ -358,8 +358,8 @@ repos. This source is real repository code, one row per file changed in a commit
 The repositories come from the [qmmit agent-commit index](https://huggingface.co/datasets/balrampandey/qmmit-open-source-agent-commit-index):
 2,000 popular GitHub repos with their share of agent-signed commits (371 TypeScript). The index has no
 code, so each repository is cloned — *blobless*: history without file contents, which are downloaded
-per selected commit. Settings are under `agent_commits:` in `configs/default.yaml`; by default the 80
-TypeScript repos with the most signed commits, `.ts`/`.tsx`/`.mts`/`.cts` files, 5+ changed lines.
+per selected commit. Settings are under `agent_commits:` in `configs/default.yaml`; by default every
+TypeScript repo with 20+ signed commits (185), `.ts`/`.tsx`/`.mts`/`.cts` files, 5+ changed lines.
 
 - **Paired per repository.** A repository contributes as many human rows as AI rows (up to 150 each),
   or nothing — repositories created after mid-2021 have no human side and are skipped. So a repository's
@@ -370,11 +370,20 @@ TypeScript repos with the most signed commits, `.ts`/`.tsx`/`.mts`/`.cts` files,
 - **Split by repository** (75/10/15%): the test split measures repositories the model never saw.
 - **React**: every row records whether it's React code (`.tsx`, or imports `react`); `summary.json` counts them.
 - **Resumable**: each finished repository is saved under `data/agent_commits/repos/`; re-running skips it.
-  Clones stay in `data/agent_repos/` (delete it afterwards to free the space).
+  Each clone is deleted once its rows are extracted (`keep_clones: true` keeps them), so disk use stays at
+  a few clones at a time.
 
-Then add `TypeScript` to `dataset.languages` if you filter languages, and run `prepare`, `embed`, `train`.
-`prepare` takes this source first (it's listed first and is small) and tops up with the benchmarks;
-it prints the rows per source.
+Then add `TypeScript` to `dataset.languages` and run `prepare`, `embed`, `train`. `prepare` takes this
+source first, so with a large build TypeScript would crowd out the other languages; to give every language
+the same share of each class, set:
+
+```yaml
+dataset:
+  languages: {include: [JavaScript, TypeScript, C++, C#]}
+  balance_languages: true   # e.g. per_class_cap 10000 -> 2500 rows per language and class
+```
+
+`prepare` prints the rows per source and per language, and names any language that ran short.
 
 Caveats: a signature proves an agent took part, not that it wrote every line (a person may have edited
 the diff); unsigned 2024+ commits are never used, as they may be AI-written too. And **time is

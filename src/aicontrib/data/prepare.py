@@ -12,16 +12,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from tqdm import tqdm
 
 from aicontrib.config import load_config
-from aicontrib.data.languages import language_filter
+from aicontrib.data.languages import canonical, language_filter
 from aicontrib.data.sources import iter_source
 
 _SPLITS = ("train", "validation", "test")
+
+
+def balanced_languages(cfg: dict) -> list[str] | None:
+    """With dataset.balance_languages, the languages that share each class's cap equally."""
+    if not cfg["dataset"].get("balance_languages"):
+        return None
+    include = (cfg["dataset"].get("languages") or {}).get("include")
+    if not include:
+        raise ValueError("dataset.balance_languages needs dataset.languages.include: the languages to balance")
+    return [canonical(name) for name in include]
 
 
 def prepare_split(cfg: dict, out_name: str) -> Path:
@@ -32,8 +43,18 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
     remapped: Counter = Counter()
     by_source: Counter = Counter()
 
+    # balance_languages: each language gets an equal share of each class's cap, so a language with plenty of
+    # rows (e.g. from the first source) can't crowd out the others.
+    balanced = balanced_languages(cfg)
+    lang_cap = math.ceil(cap / len(balanced)) if balanced and cap is not None else None
+    per_lang: Counter = Counter()
+
     def cap_reached(cls: str) -> bool:
-        return cap is not None and counts[cls] >= cap
+        if cap is None:
+            return False
+        if lang_cap is not None:
+            return all(per_lang[(cls, lang)] >= lang_cap for lang in balanced)
+        return counts[cls] >= cap
 
     counts: dict[str, int] = defaultdict(int)
     languages: Counter = Counter()
@@ -69,13 +90,14 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
                     if not allowed(lang):
                         filtered_out += 1
                         continue
-                if cap_reached(cls):
+                if cap_reached(cls) or (lang_cap is not None and per_lang[(cls, lang)] >= lang_cap):
                     continue
                 digest = hashlib.sha256(code.encode("utf-8", errors="ignore")).hexdigest()
                 if digest in seen_hashes:
                     continue
                 seen_hashes.add(digest)
                 counts[cls] += 1
+                per_lang[(cls, lang)] += 1
                 by_source[f"{source_cfg['name']}/{cls}"] += 1
                 if cls != source_cls:
                     remapped[f"{source_cls} -> {cls}"] += 1
@@ -93,6 +115,11 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
     print(f"[{out_name}] per-source counts: {dict(sorted(by_source.items()))}")
     if remapped:
         print(f"[{out_name}] of which relabelled (classes.remap): {dict(remapped)}")
+    if lang_cap is not None:
+        short = [f"{lang}/{cls} {per_lang[(cls, lang)]}" for cls in class_names for lang in balanced
+                 if per_lang[(cls, lang)] < lang_cap]
+        print(f"[{out_name}] balanced languages: {lang_cap} rows per language and class"
+              + (f"; not enough rows for: {', '.join(short)}" if short else ""))
     return out_path
 
 

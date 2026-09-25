@@ -109,3 +109,13 @@ def test_match_sizes_pairs_rows_of_similar_size():
 
     assert {(a["id"], h["id"]) for a, h in zip(ai_rows, human_rows)} == {("a-big", "h90"), ("a-small", "h7")}
     assert ac.match_sizes(ai, [human[0]]) == ([ai[1]], [human[0]])  # fewer humans: the closest AI row is kept
+
+
+def test_remove_clone_handles_read_only_git_objects(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / ".git" / "objects" / "pack").mkdir(parents=True)
+    pack = clone / ".git" / "objects" / "pack" / "pack-1.pack"
+    pack.write_bytes(b"x")
+    pack.chmod(0o444)  # as git leaves it; blocks deletion on Windows
+    ac._remove_clone(clone)
+    assert not clone.exists()

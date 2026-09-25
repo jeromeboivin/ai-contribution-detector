@@ -58,9 +58,13 @@ dataset:
   # Keep only some programming languages, in every split (set this in configs/local.yaml):
   #   languages: {include: [Python, JavaScript, C++, C#]}     keep only these
   #   languages: {exclude: [Rust, Ruby, HTML]}                keep everything but these
-  # Names: C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML (case-insensitive).
-  # Per-language shares of each dataset: aicontrib/data/language_stats.json and README.
+  # Names: C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML, TypeScript (case-insensitive;
+  # TypeScript only comes from the agent_commits source). Per-language shares of each dataset:
+  # aicontrib/data/language_stats.json and README.
   languages: {}
+  # true: each language in languages.include gets an equal share of every class's cap -- e.g. 4 languages
+  # and a cap of 10000 give 2500 rows per language and class. Without it, shares follow the sources.
+  balance_languages: false
 
 classes:
   # Binary: is this code AI-generated or not? AICD-Bench's human/AI "hybrid" code (co_authored) counts
@@ -144,7 +148,8 @@ agent_commits:
   index_revision: "a5ae0357a23b617d60e194950cdd18a295ab4c80"
   repo_languages: [TypeScript]  # GitHub's primary language of the repository, as the index records it
   min_signed_commits: 20        # repositories with fewer agent-signed commits are skipped
-  max_repos: 80                 # most agent-active first; each is cloned (history only, no file contents)
+  max_repos: null               # null: all that qualify (185 TypeScript repos); most agent-active first
+  keep_clones: false            # delete each clone once its rows are extracted (they'd add up to many GB)
   ai_since: "2024-01-01"        # agent-signed commits from this date
   human_until: "2021-06-01"     # human commits before this date (GitHub Copilot's preview: June 2021)
   extensions: [.ts, .tsx, .mts, .cts]

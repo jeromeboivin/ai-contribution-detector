@@ -27,8 +27,10 @@ import hashlib
 import json
 import math
 import random
+import os
 import re
 import shutil
+import stat
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -222,8 +224,8 @@ def select_repos(acfg: dict) -> list[dict]:
                               revision=acfg["index_revision"])
     df = pd.read_parquet(parquet, columns=["repo", "github_url", "language", "agent_attributed_commits"])
     df = df[df["language"].isin(acfg["repo_languages"]) & (df["agent_attributed_commits"] >= acfg["min_signed_commits"])]
-    df = df.sort_values("agent_attributed_commits", ascending=False).head(acfg["max_repos"])
-    return df.to_dict("records")
+    df = df.sort_values("agent_attributed_commits", ascending=False)
+    return (df.head(acfg["max_repos"]) if acfg.get("max_repos") else df).to_dict("records")
 
 
 def _clone(url: str, dest: Path) -> None:
@@ -236,6 +238,15 @@ def _clone(url: str, dest: Path) -> None:
     subprocess.run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--single-branch", url, str(tmp)],
                    capture_output=True, check=True)
     tmp.rename(dest)
+
+
+def _remove_clone(path: Path) -> None:
+    # Git marks its object files read-only, which makes a plain rmtree fail on Windows.
+    def make_writable_and_retry(func, target, _):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onerror=make_writable_and_retry)
 
 
 def _resolve(path: str) -> Path:
@@ -263,6 +274,8 @@ def build_agent_commits(cfg: dict, max_repos: int | None = None, log: Callable[[
         try:
             _clone(entry["github_url"], clone_dir / slug)
             rows, stats = build_repo_rows(clone_dir / slug, name, acfg)
+            if not acfg.get("keep_clones"):
+                _remove_clone(clone_dir / slug)  # its rows are all we need; big clones add up to many GB
         except subprocess.CalledProcessError as exc:  # not saved: retried on the next run
             return {"repo": name, "error": exc.stderr.decode("utf-8", "replace").strip()[-300:]}
         except Exception as exc:  # noqa: BLE001 - one odd repository mustn't stop the other workers
