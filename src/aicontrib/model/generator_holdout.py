@@ -27,7 +27,7 @@ from sklearn.metrics import roc_auc_score
 from torch import nn
 
 from aicontrib.data.languages import canonical, language_filter
-from aicontrib.features.embed import CodeEmbedder, embed_texts
+from aicontrib.features.embed import CodeEmbedder, embed_texts, representation_slug
 from aicontrib.model.classifier import MLPClassifier
 
 HUMAN = "Human"
@@ -50,9 +50,8 @@ def sample_rows(rows: list[dict], per_generator: int, allowed, seed: int) -> lis
 def _embed_cached(cfg: dict, embedder: CodeEmbedder, split: str, rows: list[dict]) -> np.ndarray:
     codes = [r["code"] for r in rows]
     digest = hashlib.sha256("\0".join(codes).encode("utf-8", errors="replace")).hexdigest()
-    rep = embedder.representation_id()
-    safe = rep.replace(":", "-").replace(",", "_")  # ':' isn't allowed in Windows file names
-    path = Path(cfg["paths"]["embeddings_dir"]) / "generator_holdout" / f"{split}-{safe}.npz"
+    path = (Path(cfg["paths"]["embeddings_dir"]) / "generator_holdout"
+            / f"{split}-{representation_slug(embedder.representation_id())}.npz")
     if path.exists():
         with np.load(path) as cached:
             if str(cached["digest"]) == digest:
@@ -155,8 +154,7 @@ def run_generator_holdout(cfg: dict) -> dict:
         "mean_seen_auc": float(np.mean([r["seen_auc"] for r in results])),
         "mean_unseen_auc": float(np.mean([r["unseen_auc"] for r in results])),
     }
-    safe = summary["representation"].replace(":", "-").replace(",", "_")
-    out = Path(cfg["paths"]["models_dir"]) / f"generator_holdout-{safe}.json"
+    out = Path(cfg["paths"]["models_dir"]) / f"generator_holdout-{representation_slug(summary['representation'])}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     summary["results_path"] = str(out)

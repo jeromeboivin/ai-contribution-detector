@@ -77,6 +77,10 @@ paths:
   timeline_cache_dir: "data/timeline_cache"  # per-commit results for `aicontrib report`
 
 embedding:
+  # A CodeT5+ embedding model (this one: 135M parameters, trained on 9 languages -- not TypeScript), or
+  # a code language model read through its hidden states, e.g. "Qwen/Qwen2.5-Coder-0.5B" (0.5B
+  # parameters, ~90 languages including TypeScript; needs representation: hidden, and hidden_layers
+  # within its 24 layers, e.g. [12, 18]). Changing it makes `embed` recompute; then re-run `train`.
   model_name: "Salesforce/codet5p-110m-embedding"
   max_length: 512
   batch_size: 32   # samples per batch when classifying commits (report / evaluate-repo)

@@ -228,8 +228,25 @@ embedding:
   hidden_layers: [6, 12]   # layers 1-12, 768 values each
 ```
 
-Then re-run `aicontrib embed` (it recomputes automatically: each cached `.npz` records the representation
-it holds) and `aicontrib train`. A checkpoint also records its representation, so `evaluate`,
+**Another model.** CodeT5+ was trained on 9 languages, not including TypeScript. `embedding.model_name`
+can instead name a code language model, read through its hidden states — e.g.
+[Qwen2.5-Coder-0.5B](https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B), trained on ~90 languages
+including TypeScript:
+
+```yaml
+# configs/local.yaml
+embedding:
+  model_name: "Qwen/Qwen2.5-Coder-0.5B"
+  representation: hidden   # the only option for a language model
+  hidden_layers: [12, 18]  # of its 24 layers, 896 values each
+```
+
+It runs in bf16 on a GPU (the precision it was trained in; ~1 GB, fits a 4 GB card) and is about 4× larger
+than CodeT5+, so `embed` takes a few times longer; batches shrink automatically to fit. Which layers work
+best is an open question — `aicontrib generator-holdout` compares settings quickly.
+
+Then re-run `aicontrib embed` (it recomputes automatically: each cached `.npz` records the model and
+representation it holds) and `aicontrib train`. A checkpoint also records its representation, so `evaluate`,
 `evaluate-repo`, `report` and `classify-commit` refuse to mix a model with embeddings of another kind.
 Compare the two with `aicontrib evaluate` and [`aicontrib generator-holdout`](#generalization-to-unseen-ai-models).
 
