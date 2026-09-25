@@ -9,28 +9,24 @@ that a benchmark test set drawn from the same sources as training can't reveal.
 """
 from __future__ import annotations
 
-import subprocess
 from collections import defaultdict
-from pathlib import Path
 
 from aicontrib.config import load_config
-from aicontrib.diff.commit import classify_commit
+from aicontrib.diff.commit import CommitClassifier, run_git
+
+
+def evenly_spaced(items: list, n: int) -> list:
+    """Evenly spaced across the full list rather than the first/last n, so early
+    scaffolding commits and late feature work are both represented."""
+    if len(items) <= n:
+        return items
+    step = len(items) / n
+    return [items[int(i * step)] for i in range(n)]
 
 
 def _sample_commit_shas(repo_path: str, n_samples: int) -> list[str]:
-    result = subprocess.run(
-        ["git", "-C", repo_path, "log", "--format=%H"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    all_shas = result.stdout.splitlines()
-    if len(all_shas) <= n_samples:
-        return all_shas
-    # Evenly spaced across the full history rather than most-recent-N, so early
-    # scaffolding commits and late feature work are both represented.
-    step = len(all_shas) / n_samples
-    return [all_shas[int(i * step)] for i in range(n_samples)]
+    # --no-merges: a merge's diff re-counts code already attributed to its branch's commits.
+    return evenly_spaced(run_git(repo_path, "log", "--no-merges", "--format=%H").splitlines(), n_samples)
 
 
 def evaluate_known_repo(
@@ -42,13 +38,14 @@ def evaluate_known_repo(
         raise ValueError(f"expected_class must be one of {class_names}, got {expected_class!r}")
 
     shas = _sample_commit_shas(repo_path, n_samples)
+    classifier = CommitClassifier(config_path)
 
     per_commit = []
     skipped = 0
     per_language_probs: dict[str, list[float]] = defaultdict(list)
 
     for sha in shas:
-        result = classify_commit(repo_path, sha, config_path)
+        result = classifier.classify(repo_path, sha)
         if result["aggregate"] is None:
             skipped += 1
             continue

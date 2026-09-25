@@ -56,6 +56,7 @@ paths:
   processed_dir: "data/processed"
   embeddings_dir: "data/embeddings"
   models_dir: "models"
+  timeline_cache_dir: "data/timeline_cache"  # per-commit results for `aicontrib report`
 
 embedding:
   model_name: "Salesforce/codet5p-110m-embedding"
@@ -83,12 +84,23 @@ training:
   seed: 42
 
 commit_classification:
+  # Bulk commits (initial imports, vendored code) can touch thousands of files -- ~45 min of CPU
+  # embedding for one commit. Only the N files with the most changed lines are classified; they
+  # dominate the line-weighted commit aggregate anyway. null = no cap.
+  max_files_per_commit: 50
+  # Only files with these extensions are fed to the model; everything else (XML, JSON, images,
+  # proprietary/binary formats...) is ignored. A commit with no file in this list gets no
+  # prediction at all and is excluded from accuracy/timeline percentages.
   supported_extensions:
     .py: python
     .js: javascript
     .jsx: javascript
-    .ts: javascript   # TypeScript routed through the JS-trained path (see README limitations)
+    .mjs: javascript
+    .cjs: javascript
+    .ts: javascript   # TypeScript/React routed through the JS-trained path (see README limitations)
     .tsx: javascript
+    .mts: javascript
+    .cts: javascript
     .cpp: cpp
     .cc: cpp
     .cxx: cpp

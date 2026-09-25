@@ -16,6 +16,67 @@ full dataset, which really wants a GPU; see [Setup](#setup) for a Windows+GPU wa
 4. For git commits, the changed region of each file in the diff is reconstructed and classified the same
    way, then aggregated to one commit-level prediction weighted by lines changed per file.
 
+## Model architecture (for data scientists)
+
+A **frozen pretrained encoder + small trainable classification head** — linear-probe-style transfer
+learning, chosen so training stays cheap (the encoder runs once per sample, never backpropagates) and the
+3-class head can't memorize a large dataset.
+
+```mermaid
+flowchart LR
+    A["Code text<br/>(file, or diff post-image)"] --> B["BPE tokenizer<br/>truncate to 512 tokens"]
+    B --> C["CodeT5+ encoder<br/>12 layers · d=768 · 12 heads<br/>FROZEN"]
+    C --> D["First-token hidden state<br/>768-d"]
+    D --> E["Linear 768→256 + L2-norm<br/>FROZEN"]
+    E --> F["MLP head<br/>256→128→64→3<br/>TRAINED"]
+    F --> G["softmax<br/>P(human), P(co-authored), P(AI)"]
+```
+
+| Stage | Details |
+|---|---|
+| Tokenizer | RoBERTa-style BPE (vocab 32,103), `<s>` prepended; inputs truncated to **512 tokens** (`embedding.max_length`) |
+| Encoder | [`Salesforce/codet5p-110m-embedding`](https://huggingface.co/Salesforce/codet5p-110m-embedding): T5 encoder stack, 12 layers, d_model 768, 12 heads, FFN 3072 (ReLU). 134.5M parameters as loaded — the "110m" in the name excludes the ~25M-parameter token-embedding table. Contrastively pretrained for code retrieval on C, C++, C#, Go, Java, JavaScript, PHP, Python, Ruby |
+| Pooling / projection | Final hidden state of the first (`<s>`) token → linear projection to 256-d → L2 normalization (part of the pretrained model, frozen) |
+| Head | `Linear(256,128) → ReLU → Dropout(0.2) → Linear(128,64) → ReLU → Dropout(0.2) → Linear(64,3)` — **41,347 trainable parameters** (`aicontrib/model/classifier.py`) |
+| Output | softmax over `human` / `co_authored` / `ai` |
+
+**Training** (`aicontrib/model/train.py`, hyperparameters in `configs/default.yaml`):
+
+- Embeddings are computed once per split and cached (`data/embeddings/*.npz`); the head then trains on
+  fixed 256-d vectors, so epochs take seconds even on CPU.
+- Objective: unweighted cross-entropy. Optimizer: Adam, lr 1e-3, weight decay 1e-4 (classic L2, not
+  AdamW's decoupled decay), batch 64, up to 30 epochs, seed 42.
+- Model selection: validation **macro-F1** after every epoch; the best epoch's weights are the checkpoint,
+  and training stops after 5 epochs without improvement. Macro-F1 (not accuracy) so the minority class
+  weighs as much as the majority ones.
+- Regularization: dropout 0.2, weight decay, early stopping, and — structurally — a small head on a frozen
+  encoder.
+
+**Labels** come from AICD-Bench's fine-grained task (human / machine / hybrid / adversarial → `human` /
+`ai` / `co_authored` / `ai`) plus CodeMirage's binary labels — see [Dataset](#dataset). Evaluation
+(`aicontrib evaluate`) reports per-class precision/recall/F1 and a confusion matrix on the held-out test split.
+
+**From files to commits** (`aicontrib/diff/commit.py`). The model only ever sees snippets; a commit is
+scored by composing per-file predictions:
+
+1. Parse `git show` for the commit (merges are diffed against their first parent).
+2. Keep files whose extension is in `commit_classification.supported_extensions`; everything else (XML,
+   JSON, images, binaries, proprietary formats) is ignored. No supported file → no prediction for that commit.
+3. For each kept file, rebuild the **post-image of every hunk** — context lines + added lines, removed
+   lines dropped — with CRLF normalized to LF. That text is what gets embedded.
+4. Bulk commits: only the `max_files_per_commit` (default 50) files with the most changed lines are scored.
+5. Commit probability = mean of the per-file probability vectors weighted by lines changed (added +
+   removed): **P(commit) = Σ wᶠ·pᶠ / Σ wᶠ**. The predicted class is the argmax.
+
+The repository timeline (`aicontrib report`) then counts each commit under its argmax class and plots, per
+month, the share of each class among that month's classified commits.
+
+**Caveats a data scientist should know:** only the first 512 tokens of each text reach the encoder;
+hunk post-images are fragments, not the whole files the model was trained on (snippet→diff domain shift);
+first-token pooling was trained for retrieval, not authorship; with the default uncapped dataset, class
+frequencies follow the sources and the loss is unweighted (macro-F1 selection only partly compensates) —
+see also [Known limitations](#known-limitations).
+
 ## Dataset
 
 Training data is pulled from two sources (`configs/default.yaml` → `dataset.sources`), combined until each
@@ -137,10 +198,55 @@ python -m aicontrib classify-commit /path/to/some/repo <commit-sha>
 
 # 7. Sanity-check against a repo with KNOWN ground-truth authorship
 python -m aicontrib evaluate-repo /path/to/some/repo human --samples 50
+
+# 8. Analyze a repo's full history into a static HTML timeline (see "Authorship timeline report")
+python -m aicontrib report /path/to/some/repo
 ```
 
-Config (dataset caps, encoder choice, MLP size, hyperparameters, supported file extensions) lives in
-`configs/default.yaml`.
+`pip install -e .` also installs an `aicontrib` command, so `aicontrib report ...` works the same as
+`python -m aicontrib report ...`. Config (dataset caps, encoder choice, MLP size, hyperparameters,
+supported file extensions) lives in `configs/default.yaml`.
+
+## Authorship timeline report
+
+Once a model is trained, point `aicontrib report` at any local git repository:
+
+```bash
+# Linux / macOS
+aicontrib report /home/me/repos/my-project
+
+# Windows (PowerShell)
+aicontrib report C:\Users\me\repos\my-project
+```
+
+It classifies every commit in the history and writes a single self-contained HTML file (no internet or
+server needed — just open it; safe to email or attach) showing, **per month over the years, the share of
+human / co-authored / AI commits** as 100% stacked bars, with commit volume underneath, overall
+percentages at the top, hover/keyboard tooltips, and a data table. Output goes to
+`./<repo-name>-authorship-timeline.html` unless you pass `-o/--output some/file.html`. The page shows the
+repo's folder name only, never its full local path.
+
+What counts:
+
+- **Only commits that change supported code** — `.py`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`,
+  `.mts`, `.cts`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.cs` (TypeScript/React go through the JavaScript
+  path). A commit that only touches XML, JSON, images, binaries or proprietary formats is **excluded**
+  from the percentages (the page reports how many were). In a mixed commit, only the code files are
+  scored. Edit `commit_classification.supported_extensions` to change the list.
+- **Merge commits are excluded** — their changes are already counted in the commits they merge.
+- Commits are dated by **author date**, so rebased history still lands in the right month.
+
+Practicalities:
+
+- **Resumable and incremental.** Each commit's result is cached in `data/timeline_cache/` the moment it's
+  computed, so Ctrl-C and re-running picks up where it stopped, and re-running after new commits only
+  classifies the new ones. Retraining the model automatically invalidates the cache (it's keyed on the
+  model file's hash). `--no-cache` forces a full re-scan.
+- **Quick preview:** `--max-commits 200` classifies 200 commits sampled evenly across the whole history.
+- **Speed** is dominated by embedding the changed files: fine on a GPU; on CPU expect roughly a second
+  per changed code file. Bulk commits (initial imports, vendored code) are capped at the 50 files with
+  the most changed lines (`commit_classification.max_files_per_commit`).
+- Commits that fail to parse are listed as unreadable on the page and retried on the next run.
 
 ## Live training dashboard
 
@@ -201,6 +307,11 @@ known_repos:
     expected_class: ai
 ```
 
+**Windows paths:** write them in single quotes, `path: 'C:\Users\me\repos\tslint'`, or with forward
+slashes, `path: "C:/Users/me/repos/tslint"`. Don't use double quotes with plain backslashes
+(`"C:\Users\..."`): YAML treats `\U`, `\t`, etc. inside double quotes as escape sequences and the file
+fails to load — the error message points back here if that happens.
+
 One well-tested public option for the `human` side, chosen specifically because it's almost entirely
 TypeScript (the language with no real training data — see Known limitations):
 [`palantir/tslint`](https://github.com/palantir/tslint) — archived, 2,895 commits spanning 2013-07-14 to
@@ -243,6 +354,10 @@ per-split runtime (up to hours) makes checkpointing worthwhile.
   available, so `classify-commit` reconstructs the post-change text of each hunk and classifies that —
   expect commit-level accuracy to be noticeably below the snippet-level test metrics reported by
   `aicontrib evaluate`.
+- **Only the first 512 tokens of each text are seen.** Longer files and hunks are truncated by the encoder.
+- **Class imbalance is not corrected.** With the default uncapped dataset, class frequencies follow the
+  sources and cross-entropy is unweighted; macro-F1 checkpoint selection only partly compensates. If the
+  minority class (usually `co_authored`) is under-predicted, set `per_class_cap` to balance the classes.
 - **TypeScript isn't in the training data** — `.ts`/`.tsx` files reuse the JavaScript path, unvalidated.
 - **Label semantics for AICD-Bench are inferred, not documented.** `aicontrib/data/sources.py`'s
   `_AICD_BENCH_LABEL_MAP` is a hypothesis based on manually reading sample rows, not an official mapping

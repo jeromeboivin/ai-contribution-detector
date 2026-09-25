@@ -1,8 +1,8 @@
 """Commit-level classification (MVP heuristic).
 
 The MLP was trained on whole human/AI code *snippets*, not diffs -- there is
-no diff-level ground-truth dataset (see plan/README). As an approximation,
-we reconstruct the post-change text of each hunk (context + added lines) per
+no diff-level ground-truth dataset (see README). As an approximation, we
+reconstruct the post-change text of each hunk (context + added lines) per
 file, classify each changed file, and aggregate to one commit-level
 distribution weighted by lines changed per file. Expect this to be less
 accurate than the snippet-level test metrics.
@@ -31,14 +31,22 @@ class FileResult:
     probabilities: dict[str, float]
 
 
+def run_git(repo_path: str, *args: str) -> str:
+    # Capture bytes and decode ourselves: text mode would apply universal-newline translation,
+    # turning a lone \r inside file content into an extra line that breaks diff hunk counts.
+    # Explicit utf-8 because Windows would otherwise use the locale codepage (cp1252).
+    result = subprocess.run(["git", "-C", repo_path, *args], capture_output=True, check=True)
+    return result.stdout.decode("utf-8", errors="replace")
+
+
 def _get_unified_diff(repo_path: str, sha: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", repo_path, "show", "--unified=3", "--format=", sha],
-        capture_output=True,
-        text=True,
-        check=True,
+    # --no-color / --no-ext-diff: a user's color.ui=always or external diff driver would
+    # otherwise change the output format. --diff-merges=first-parent: merges default to a
+    # combined `diff --cc`, which unidiff can't parse.
+    return run_git(
+        repo_path, "show", "--unified=3", "--format=", "--no-color", "--no-ext-diff",
+        "--diff-merges=first-parent", sha,
     )
-    return result.stdout
 
 
 def _post_image_text(patched_file) -> tuple[str, int]:
@@ -52,65 +60,75 @@ def _post_image_text(patched_file) -> tuple[str, int]:
             lines.append(line.value)
             if line.is_added:
                 changed += 1
-    return "".join(lines), changed
+    # CRLF -> LF so files committed with Windows line endings look like the (LF) training data.
+    return "".join(lines).replace("\r\n", "\n"), changed
 
 
-def _language_for(path: str, cfg: dict) -> str | None:
-    ext = Path(path).suffix.lower()
-    return cfg["commit_classification"]["supported_extensions"].get(ext)
+class CommitClassifier:
+    """Loads the encoder and MLP once, then classifies any number of commits --
+    reloading the 110M-param encoder per commit would dominate a full-history scan."""
+
+    def __init__(self, config_path: str | None = None):
+        self.cfg = load_config(config_path) if config_path else load_config()
+        self.device = get_device()
+        self.model = load_checkpoint(Path(self.cfg["paths"]["models_dir"]) / "mlp_classifier.pt", self.device)
+        self.embedder = CodeEmbedder(self.cfg)
+        self.class_names = self.cfg["classes"]["names"]
+        self.extensions = self.cfg["commit_classification"]["supported_extensions"]
+        self.max_files = self.cfg["commit_classification"].get("max_files_per_commit")
+
+    @torch.no_grad()
+    def _probabilities(self, texts: list[str]) -> np.ndarray:
+        batch_size = self.cfg["embedding"]["batch_size"]
+        chunks = []
+        for i in range(0, len(texts), batch_size):
+            x = torch.tensor(self.embedder.embed_batch(texts[i : i + batch_size]), dtype=torch.float32)
+            chunks.append(torch.softmax(self.model(x.to(self.device)), dim=-1).cpu().numpy())
+        return np.concatenate(chunks, axis=0)
+
+    def classify(self, repo_path: str, sha: str) -> dict:
+        patch = PatchSet(_get_unified_diff(repo_path, sha))
+
+        candidates = []
+        for patched_file in patch:
+            if patched_file.is_removed_file or patched_file.is_binary_file:
+                continue
+            language = self.extensions.get(Path(patched_file.path).suffix.lower())
+            if language is None:
+                continue
+            text, lines_changed = _post_image_text(patched_file)
+            if text.strip() and lines_changed:
+                candidates.append((patched_file.path, language, lines_changed, text))
+
+        if not candidates:
+            return {"commit": sha, "files": [], "aggregate": None, "note": "no supported-language files with changes found"}
+
+        files_over_cap = 0
+        if self.max_files and len(candidates) > self.max_files:
+            candidates.sort(key=lambda c: c[2], reverse=True)
+            files_over_cap = len(candidates) - self.max_files
+            candidates = candidates[: self.max_files]
+
+        probs = self._probabilities([c[3] for c in candidates])
+        file_results = [
+            FileResult(path=path, language=language, lines_changed=lines_changed,
+                       probabilities=dict(zip(self.class_names, p.tolist())))
+            for (path, language, lines_changed, _), p in zip(candidates, probs)
+        ]
+
+        weights = np.array([fr.lines_changed for fr in file_results], dtype=np.float64)
+        aggregate = (weights[:, None] / weights.sum() * probs).sum(axis=0)
+
+        return {
+            "commit": sha,
+            "files": [
+                {"path": fr.path, "language": fr.language, "lines_changed": fr.lines_changed, "probabilities": fr.probabilities}
+                for fr in file_results
+            ],
+            "aggregate": dict(zip(self.class_names, aggregate.tolist())),
+            "files_not_classified_over_cap": files_over_cap,
+        }
 
 
 def classify_commit(repo_path: str, sha: str, config_path: str | None = None) -> dict:
-    cfg = load_config(config_path) if config_path else load_config()
-    device = get_device()
-
-    checkpoint_path = Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt"
-    model = load_checkpoint(checkpoint_path, device)
-    embedder = CodeEmbedder(cfg)
-    class_names = cfg["classes"]["names"]
-
-    diff_text = _get_unified_diff(repo_path, sha)
-    patch = PatchSet(diff_text)
-
-    file_results: list[FileResult] = []
-    for patched_file in patch:
-        if patched_file.is_removed_file or patched_file.is_binary_file:
-            continue
-        language = _language_for(patched_file.path, cfg)
-        if language is None:
-            continue
-
-        text, lines_changed = _post_image_text(patched_file)
-        if not text.strip() or lines_changed == 0:
-            continue
-
-        embedding = embedder.embed_many([text])
-        with torch.no_grad():
-            x = torch.tensor(embedding, dtype=torch.float32).to(device)
-            probs = torch.softmax(model(x), dim=-1).cpu().numpy()[0]
-
-        file_results.append(
-            FileResult(
-                path=patched_file.path,
-                language=language,
-                lines_changed=lines_changed,
-                probabilities=dict(zip(class_names, probs.tolist())),
-            )
-        )
-
-    if not file_results:
-        return {"commit": sha, "files": [], "aggregate": None, "note": "no supported-language files with changes found"}
-
-    weights = np.array([fr.lines_changed for fr in file_results], dtype=np.float64)
-    weights = weights / weights.sum()
-    prob_matrix = np.array([[fr.probabilities[name] for name in class_names] for fr in file_results])
-    aggregate = (weights[:, None] * prob_matrix).sum(axis=0)
-
-    return {
-        "commit": sha,
-        "files": [
-            {"path": fr.path, "language": fr.language, "lines_changed": fr.lines_changed, "probabilities": fr.probabilities}
-            for fr in file_results
-        ],
-        "aggregate": dict(zip(class_names, aggregate.tolist())),
-    }
+    return CommitClassifier(config_path).classify(repo_path, sha)

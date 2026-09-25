@@ -84,6 +84,20 @@ def main(argv: list[str] | None = None) -> None:
         "--name", help="Label for the dashboard (default: the repo directory's basename)"
     )
 
+    report_parser = subparsers.add_parser(
+        "report", help="Classify every commit of a local repo and write a static HTML authorship timeline"
+    )
+    report_parser.add_argument("repo_path", help="Path to a local git repository")
+    report_parser.add_argument(
+        "-o", "--output", help="HTML file to write (default: ./<repo-name>-authorship-timeline.html)"
+    )
+    report_parser.add_argument(
+        "--max-commits", type=int, help="Only analyze N commits, sampled evenly across history (quick preview)"
+    )
+    report_parser.add_argument(
+        "--no-cache", action="store_true", help="Reclassify every commit instead of reusing cached results"
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "audit":
@@ -151,6 +165,21 @@ def main(argv: list[str] | None = None) -> None:
             except Exception as exc:  # noqa: BLE001 - one bad entry (e.g. missing local path) shouldn't abort the rest
                 print(f"[{name or repo_path}] skipped: {exc}")
                 print()
+    elif args.command == "report":
+        import subprocess
+        from pathlib import Path
+
+        from aicontrib.config import load_config
+        from aicontrib.diff.timeline import write_report
+
+        checkpoint = Path(load_config()["paths"]["models_dir"]) / "mlp_classifier.pt"
+        if not checkpoint.exists():
+            sys.exit(f"No trained model at {checkpoint} -- run `prepare`, `embed` and `train` first (see README).")
+        try:
+            out = write_report(args.repo_path, args.output, max_commits=args.max_commits, use_cache=not args.no_cache)
+        except subprocess.CalledProcessError as exc:
+            sys.exit(f"git failed on {args.repo_path!r}: {exc.stderr.decode('utf-8', 'replace').strip()}")
+        print(f"Report written to {out}")
 
 
 if __name__ == "__main__":

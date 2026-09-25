@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorship timeline</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface-1: #fcfcfb;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --volume: #a3a29b;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface-1: #1a1a19;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --volume: #6b6a65;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface-1: #1a1a19;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --volume: #6b6a65;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .secondary { color: var(--text-secondary); }
+  .muted { color: var(--text-muted); }
+  header { margin-bottom: 24px; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .kpi-label { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
+  .kpi-value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+  .kpi-sub { color: var(--text-muted); font-size: 12px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+  .card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; margin-bottom: 12px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; color: var(--text-secondary); font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* The y-axis gutter is pinned; only the plot scrolls horizontally on long histories. */
+  .chart-frame { position: relative; }
+  #yaxis { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+  .chart-scroll { overflow-x: auto; overflow-y: hidden; margin-left: 44px; }
+  #chart { display: block; }
+  #chart text, #yaxis text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #yaxis .panel-label { fill: var(--text-secondary); font-size: 12px; }
+  #chart .month { transition: opacity 120ms; }
+  #chart.has-active .month { opacity: 0.35; }
+  #chart.has-active .month.active { opacity: 1; }
+  #chart .hit { fill: transparent; cursor: default; outline: none; }
+  #chart .hit:focus-visible { stroke: var(--text-secondary); stroke-width: 1; }
+  .empty { padding: 48px 0; text-align: center; color: var(--text-muted); }
+  .note { color: var(--text-muted); font-size: 12px; margin: 12px 0 0; }
+
+  details.card summary { cursor: pointer; font-weight: 600; }
+  .table-wrap { overflow-x: auto; margin-top: 12px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--text-secondary); font-weight: 600; }
+
+  #tooltip {
+    position: fixed;
+    z-index: 10;
+    pointer-events: none;
+    background: var(--surface-1);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    padding: 10px 12px;
+    font-size: 13px;
+    min-width: 190px;
+  }
+  .tt-title { color: var(--text-secondary); margin-bottom: 6px; }
+  .tt-row { display: grid; grid-template-columns: 14px 40px 1fr; align-items: center; gap: 8px; padding: 1px 0; }
+  .tt-key { width: 12px; height: 3px; border-radius: 2px; }
+  .tt-row strong { font-variant-numeric: tabular-nums; text-align: right; }
+  .tt-name { color: var(--text-secondary); }
+  .tt-foot { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body class="viz-root">
+<main>
+  <header>
+    <h1 id="title"></h1>
+    <div id="subtitle" class="secondary"></div>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="Overall share of commits"></section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Share of commits by authorship, per month</h2>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="chart-frame" id="chart-frame"><div class="chart-scroll" id="chart-scroll"></div></div>
+    <p class="note" id="note"></p>
+  </section>
+
+  <details class="card">
+    <summary>Data table</summary>
+    <div class="table-wrap"><table id="table"></table></div>
+  </details>
+</main>
+<div id="tooltip" role="tooltip" hidden></div>
+
+<script type="application/json" id="report-data">__REPORT_DATA__</script>
+<script>
+(function () {
+  "use strict";
+
+  const report = JSON.parse(document.getElementById("report-data").textContent);
+  const classes = report.class_names;
+  const label = (c) => report.class_labels[c] || c;
+  const seriesVar = (c) => `var(--series-${classes.indexOf(c) + 1})`;
+  // Bottom-to-top stack order: AI sits on the baseline, where its trend is easiest to read.
+  const stackOrder = ["ai", "co_authored", "human"].filter((c) => classes.includes(c));
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  // The page's text is English, so dates and numbers are too (not the browser's locale).
+  const LOCALE = "en-US";
+  const classified = (m) => classes.reduce((sum, c) => sum + m.counts[c], 0);
+  const pct = (n, d) => (d ? Math.round((100 * n) / d) : 0);
+  const monthName = (key) => {
+    const [y, m] = key.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, 1)).toLocaleString(LOCALE, { month: "long", year: "numeric", timeZone: "UTC" });
+  };
+  const fmt = (n) => n.toLocaleString(LOCALE);
+  const commits = (n) => `${fmt(n)} ${n === 1 ? "commit" : "commits"}`;
+
+  function el(tag, attrs, text) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function svg(tag, attrs, text) {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function swatch(c, cls) {
+    const s = el("span", { class: cls || "swatch" });
+    s.style.background = seriesVar(c);
+    return s;
+  }
+  // Column with a 4px rounded data-end on top, square at the bottom.
+  function topRoundedRect(x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h));
+    return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+  }
+  function niceCeil(v) {
+    if (v <= 1) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const s of [1, 2, 5, 10]) if (s * p >= v) return s * p;
+    return 10 * p;
+  }
+
+  // ---- Header ------------------------------------------------------------
+  document.title = `Authorship timeline — ${report.repo}`;
+  document.getElementById("title").textContent = `Authorship timeline — ${report.repo}`;
+  const months = report.months;
+  const range = months.length ? `${monthName(months[0].month)} – ${monthName(months[months.length - 1].month)}` : "no commits";
+  document.getElementById("subtitle").textContent =
+    `${range} · generated ${report.generated_at.replace("T", " ")} · model ${report.model}`;
+
+  // ---- KPI row -----------------------------------------------------------
+  const kpis = document.getElementById("kpis");
+  const kpiTile = (labelNode, value, sub) => {
+    const tile = el("div", { class: "kpi" });
+    tile.append(labelNode, el("div", { class: "kpi-value" }, value), el("div", { class: "kpi-sub" }, sub));
+    kpis.append(tile);
+  };
+  kpiTile(el("div", { class: "kpi-label" }, "Commits classified"), fmt(report.n_classified),
+    `of ${fmt(report.n_commits_analyzed)} analyzed (non-merge)`);
+  for (const c of classes) {
+    const lab = el("div", { class: "kpi-label" });
+    lab.append(swatch(c), document.createTextNode(label(c)));
+    kpiTile(lab, `${pct(report.totals[c], report.n_classified)}%`, commits(report.totals[c]));
+  }
+
+  // ---- Legend ------------------------------------------------------------
+  const legend = document.getElementById("legend");
+  for (const c of classes) {
+    const item = el("span");
+    item.append(swatch(c), document.createTextNode(label(c)));
+    legend.append(item);
+  }
+
+  // ---- Notes -------------------------------------------------------------
+  const noteParts = [
+    "Each commit is classified from the code it changes (Python, JavaScript/TypeScript, C++, C#) and counted " +
+      "under its most likely class, by author date.",
+  ];
+  if (report.n_skipped) noteParts.push(`Excluded: ${commits(report.n_skipped)} touching no supported-language file.`);
+  if (report.n_errors) noteParts.push(`Excluded: ${commits(report.n_errors)} that could not be read.`);
+  noteParts.push("Merge commits are excluded (their changes are already counted in the merged commits).");
+  if (report.n_commits_analyzed < report.n_commits_total) {
+    noteParts.push(`Sampled ${fmt(report.n_commits_analyzed)} of ${fmt(report.n_commits_total)} commits, evenly across history.`);
+  }
+  document.getElementById("note").textContent = noteParts.join(" ");
+
+  // ---- Chart -------------------------------------------------------------
+  const scroll = document.getElementById("chart-scroll");
+  const tooltip = document.getElementById("tooltip");
+  let chartNode = null;
+  let activeIndex = -1;
+
+  function showTooltip(i, clientX, clientY) {
+    const m = months[i];
+    const n = classified(m);
+    tooltip.replaceChildren();
+    tooltip.append(el("div", { class: "tt-title" }, monthName(m.month)));
+    if (n) {
+      for (const c of [...stackOrder].reverse()) {
+        const row = el("div", { class: "tt-row" });
+        row.append(swatch(c, "tt-key"), el("strong", {}, `${pct(m.counts[c], n)}%`),
+          el("span", { class: "tt-name" }, `${label(c)} · ${fmt(m.counts[c])}`));
+        tooltip.append(row);
+      }
+    }
+    const foot = [n ? `${commits(n)} classified` : "No classified commits"];
+    if (m.skipped) foot.push(`${fmt(m.skipped)} without supported code`);
+    if (m.errors) foot.push(`${fmt(m.errors)} unreadable`);
+    tooltip.append(el("div", { class: "tt-foot" }, foot.join(" · ")));
+    tooltip.hidden = false;
+
+    const pad = 14;
+    const { width, height } = tooltip.getBoundingClientRect();
+    let x = clientX + pad;
+    let y = clientY + pad;
+    if (x + width > window.innerWidth - 8) x = clientX - width - pad;
+    if (y + height > window.innerHeight - 8) y = clientY - height - pad;
+    tooltip.style.left = `${Math.max(8, x)}px`;
+    tooltip.style.top = `${Math.max(8, y)}px`;
+  }
+
+  function setActive(i) {
+    activeIndex = i;
+    chartNode.classList.toggle("has-active", i >= 0);
+    chartNode.querySelectorAll(".month").forEach((g) => g.classList.toggle("active", Number(g.dataset.i) === i));
+    if (i < 0) tooltip.hidden = true;
+  }
+
+  function render() {
+    const frame = document.getElementById("chart-frame");
+    frame.querySelector("#yaxis")?.remove();
+    scroll.replaceChildren();
+    tooltip.hidden = true;
+    if (!report.n_classified) {
+      scroll.append(el("div", { class: "empty" }, "No commits with supported-language code were found in this repository."));
+      return;
+    }
+
+    const GUTTER = 44;  // must match .chart-scroll's margin-left
+    const margin = { left: 0, right: 12, top: 10 };
+    const shareH = 260, gapH = 36, volH = 72, axisH = 26;
+    const available = Math.max(200, scroll.clientWidth - margin.right);
+    const band = Math.max(8, Math.min(36, available / months.length));
+    const barW = Math.min(24, band - 2);  // the remaining >= 2px is the surface gap between columns
+    const width = margin.left + margin.right + band * months.length;
+    const volTop = margin.top + shareH + gapH;
+    const height = volTop + volH + axisH;
+    const GAP = 2;
+
+    const root = svg("svg", { id: "chart", width, height, role: "img",
+      "aria-label": "Monthly share of human, co-authored and AI commits, with commit volume below" });
+    chartNode = root;
+    const grid = svg("g");
+    const marks = svg("g");
+    const axes = svg("g");
+    const hits = svg("g");
+    root.append(grid, marks, axes, hits);
+    // Pinned gutter: y ticks and the panel label stay visible while the plot scrolls.
+    const yaxis = svg("svg", { id: "yaxis", width: GUTTER, height, "aria-hidden": "true" });
+
+    // Share panel gridlines + y ticks (0-100%)
+    for (const t of [0, 25, 50, 75, 100]) {
+      const y = margin.top + shareH - (t / 100) * shareH;
+      grid.append(svg("line", { x1: margin.left, x2: width - margin.right, y1: y, y2: y,
+        stroke: t === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1, "shape-rendering": "crispEdges" }));
+      yaxis.append(svg("text", { x: GUTTER - 8, y: y + 4, "text-anchor": "end" }, `${t}%`));
+    }
+
+    // Volume panel
+    const maxCount = niceCeil(Math.max(...months.map(classified)));
+    yaxis.append(svg("text", { class: "panel-label", x: GUTTER, y: volTop - 10 }, "Commits classified per month"));
+    for (const t of [0, maxCount]) {
+      const y = volTop + volH - (t / maxCount) * volH;
+      grid.append(svg("line", { x1: margin.left, x2: width - margin.right, y1: y, y2: y,
+        stroke: t === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1, "shape-rendering": "crispEdges" }));
+      yaxis.append(svg("text", { x: GUTTER - 8, y: y + 4, "text-anchor": "end" }, fmt(t)));
+    }
+
+    months.forEach((m, i) => {
+      const x0 = margin.left + i * band;
+      const bx = x0 + (band - barW) / 2;
+      const n = classified(m);
+      const g = svg("g", { class: "month", "data-i": i });
+      marks.append(g);
+
+      if (n) {
+        const segments = stackOrder.filter((c) => m.counts[c] > 0);
+        let cum = 0;
+        segments.forEach((c, si) => {
+          const h = (m.counts[c] / n) * shareH;
+          const yTop = margin.top + shareH - cum - h;
+          const isTop = si === segments.length - 1;
+          const drawnH = isTop ? h : h - GAP;  // 2px surface gap above every non-top segment
+          cum += h;
+          if (drawnH <= 0) return;
+          const shape = isTop
+            ? svg("path", { d: topRoundedRect(bx, yTop, barW, drawnH, 4) })
+            : svg("rect", { x: bx, y: yTop + GAP, width: barW, height: drawnH });
+          shape.style.fill = seriesVar(c);
+          g.append(shape);
+        });
+
+        const vh = (n / maxCount) * volH;
+        const vol = svg("path", { d: topRoundedRect(bx, volTop + volH - vh, barW, vh, 4) });
+        vol.style.fill = "var(--volume)";
+        g.append(vol);
+      }
+
+      // Year label under each January (and the first month shown)
+      if (i === 0 || m.month.endsWith("-01")) {
+        const yAxis = volTop + volH;
+        axes.append(svg("line", { x1: x0, x2: x0, y1: yAxis, y2: yAxis + 5, stroke: "var(--axis)", "stroke-width": 1,
+          "shape-rendering": "crispEdges" }));
+        axes.append(svg("text", { x: x0 + 3, y: yAxis + 17 }, m.month.slice(0, 4)));
+      }
+
+      // Hit target: the whole month band across both panels, wider than the painted column.
+      const summary = n
+        ? `${monthName(m.month)}: ` + classes.map((c) => `${label(c)} ${pct(m.counts[c], n)}%`).join(", ") + `, ${commits(n)}`
+        : `${monthName(m.month)}: no classified commits`;
+      const hit = svg("rect", { class: "hit", x: x0, y: margin.top, width: band, height: volTop + volH - margin.top,
+        tabindex: 0, "data-i": i, "aria-label": summary });
+      hits.append(hit);
+    });
+
+    hits.addEventListener("pointermove", (e) => {
+      const i = Number(e.target.dataset.i);
+      if (Number.isNaN(i)) return;
+      if (i !== activeIndex) setActive(i);
+      showTooltip(i, e.clientX, e.clientY);
+    });
+    root.addEventListener("pointerleave", () => setActive(-1));
+    hits.addEventListener("focusin", (e) => {
+      const i = Number(e.target.dataset.i);
+      const box = e.target.getBoundingClientRect();
+      setActive(i);
+      showTooltip(i, box.right, box.top + 40);
+    });
+    hits.addEventListener("focusout", () => setActive(-1));
+    hits.addEventListener("keydown", (e) => {
+      const i = Number(e.target.dataset.i);
+      const next = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : null;
+      if (next === null || next < 0 || next >= months.length) return;
+      e.preventDefault();
+      hits.children[next].focus();
+    });
+
+    frame.prepend(yaxis);
+    scroll.append(root);
+    // Long histories scroll horizontally: start at the most recent months.
+    scroll.scrollLeft = scroll.scrollWidth;
+  }
+
+  // ---- Data table --------------------------------------------------------
+  const table = document.getElementById("table");
+  const head = el("tr");
+  head.append(el("th", {}, "Month"));
+  for (const c of classes) head.append(el("th", {}, label(c)));
+  head.append(el("th", {}, "Classified"), el("th", {}, "No supported code"));
+  if (report.n_errors) head.append(el("th", {}, "Unreadable"));
+  const thead = el("thead");
+  thead.append(head);
+  const tbody = el("tbody");
+  for (const m of months) {
+    const n = classified(m);
+    if (!n && !m.skipped && !m.errors) continue;
+    const tr = el("tr");
+    tr.append(el("td", {}, monthName(m.month)));
+    for (const c of classes) tr.append(el("td", {}, n ? `${pct(m.counts[c], n)}% (${fmt(m.counts[c])})` : "–"));
+    tr.append(el("td", {}, fmt(n)), el("td", {}, fmt(m.skipped)));
+    if (report.n_errors) tr.append(el("td", {}, fmt(m.errors)));
+    tbody.append(tr);
+  }
+  table.append(thead, tbody);
+
+  render();
+  let resizeTimer;
+  window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
+})();
+</script>
+</body>
+</html>

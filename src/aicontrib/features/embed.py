@@ -46,13 +46,6 @@ class CodeEmbedder:
         embeddings = self.model(**inputs)
         return embeddings.cpu().numpy()
 
-    def embed_many(self, codes: list[str]) -> np.ndarray:
-        batch_size = self.cfg["batch_size"]
-        chunks = []
-        for i in tqdm(range(0, len(codes), batch_size), desc="embedding"):
-            chunks.append(self.embed_batch(codes[i : i + batch_size]))
-        return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, self.cfg["dim"]), dtype=np.float32)
-
 
 def embed_split(cfg: dict, embedder: CodeEmbedder, split: str, force: bool = False) -> Path:
     """Embeds one split, checkpointing every `checkpoint_every_batches` batches to
