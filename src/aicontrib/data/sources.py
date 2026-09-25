@@ -9,10 +9,13 @@ near-duplicate rows the AICD authors deliberately removed.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Iterator
 
 from datasets import load_dataset
 
+from aicontrib.config import REPO_ROOT
 from aicontrib.data.languages import canonical, load_index
 
 # AICD-Bench T3's raw int label -> our class. Not documented by the dataset authors
@@ -50,7 +53,22 @@ def iter_codemirage(source_cfg: dict[str, Any], hf_split: str) -> Iterator[Row]:
         yield row["code"], cls, canonical(row["language"])
 
 
+def iter_agent_commits(source_cfg: dict[str, Any], split: str) -> Iterator[Row]:
+    """Local files written by `aicontrib build-agent-commits` (aicontrib/data/agent_commits.py);
+    nothing until they exist."""
+    path = Path(source_cfg["path"])
+    path = (path if path.is_absolute() else REPO_ROOT / path) / f"{split}.jsonl"
+    if not path.exists():
+        print(f"[{source_cfg['name']}] no {path} -- run `aicontrib build-agent-commits` to use this source")
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            row = json.loads(line)
+            yield row["code"], row["label"], canonical(row["language"])
+
+
 ADAPTERS = {
+    "agent_commits": iter_agent_commits,
     "aicd_bench": iter_aicd_bench,
     "codemirage": iter_codemirage,
 }

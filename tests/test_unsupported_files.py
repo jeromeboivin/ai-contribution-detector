@@ -55,7 +55,7 @@ def test_non_code_changes_are_ignored(tmp_path):
 
     mixed_result = clf.classify(str(repo), mixed)
     assert [f["path"] for f in mixed_result["files"]] == ["App.tsx"]
-    assert mixed_result["files"][0]["language"] == "javascript"
+    assert mixed_result["files"][0]["language"] == "typescript"
     assert mixed_result["aggregate"] is not None
 
     esm_result = clf.classify(str(repo), esm)

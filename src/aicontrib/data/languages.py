@@ -31,11 +31,12 @@ HERE = Path(__file__).resolve().parent
 INDEX_PATH = HERE / "aicd_t3_languages.npz"
 STATS_PATH = HERE / "language_stats.json"
 
-LANGUAGES = ["C", "C#", "C++", "Go", "Java", "JavaScript", "PHP", "Python", "Rust", "Ruby", "HTML"]
+# Append only: the shipped AICD-Bench index stores positions in the list as it was when built.
+LANGUAGES = ["C", "C#", "C++", "Go", "Java", "JavaScript", "PHP", "Python", "Rust", "Ruby", "HTML", "TypeScript"]
 UNKNOWN = 255
 CHECKPOINT_EVERY = 50_000
 AICD_SPLITS = ("train", "validation", "test")
-_ALIASES = {"cpp": "C++", "csharp": "C#", "cs": "C#", "golang": "Go", "js": "JavaScript", "py": "Python"}
+_ALIASES = {"cpp": "C++", "csharp": "C#", "cs": "C#", "golang": "Go", "js": "JavaScript", "py": "Python", "ts": "TypeScript"}
 
 
 def canonical(name: str | None) -> str | None:
@@ -59,9 +60,7 @@ def language_filter(cfg: dict) -> Callable[[str | None], bool] | None:
         for name in names:
             lang = canonical(name)
             if lang is None:
-                hint = " (TypeScript isn't in the training data; it's analysed as JavaScript)" \
-                    if str(name).strip().lower() in ("typescript", "ts") else ""
-                raise ValueError(f"Unknown language {name!r} in dataset.languages{hint}. "
+                raise ValueError(f"Unknown language {name!r} in dataset.languages. "
                                  f"Valid names: {', '.join(LANGUAGES)}")
             out.add(lang)
         return out

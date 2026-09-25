@@ -28,8 +28,12 @@ def test_include_exclude_and_case_insensitive_aliases():
 def test_unknown_language_name_is_rejected_with_the_valid_list():
     with pytest.raises(ValueError, match="Valid names"):
         language_filter(_cfg({"include": ["Pyhton"]}))
-    with pytest.raises(ValueError, match="analysed as JavaScript"):
-        language_filter(_cfg({"include": ["TypeScript"]}))
+
+
+def test_typescript_is_a_language_for_the_agent_commit_data():
+    keep = language_filter(_cfg({"include": ["TypeScript", "js"]}))
+    assert keep("TypeScript") and keep("JavaScript") and not keep("Python")
+    assert languages.canonical("ts") == "TypeScript"
 
 
 def test_index_roundtrip_and_misalignment_detection(tmp_path):

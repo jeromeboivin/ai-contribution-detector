@@ -30,6 +30,7 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
     remap = cfg["classes"].get("remap") or {}  # e.g. co_authored -> human for the binary model
     num_classes = len(class_names)
     remapped: Counter = Counter()
+    by_source: Counter = Counter()
 
     def cap_reached(cls: str) -> bool:
         return cap is not None and counts[cls] >= cap
@@ -75,6 +76,7 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
                     continue
                 seen_hashes.add(digest)
                 counts[cls] += 1
+                by_source[f"{source_cfg['name']}/{cls}"] += 1
                 if cls != source_cls:
                     remapped[f"{source_cls} -> {cls}"] += 1
                 languages[lang or "unknown"] += 1
@@ -88,6 +90,7 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
           f"skipped {empty_rows} rows with no code"
           + (f", {filtered_out} rows in excluded languages" if allowed is not None else ""))
     print(f"[{out_name}] per-language counts: {dict(languages.most_common())}")
+    print(f"[{out_name}] per-source counts: {dict(sorted(by_source.items()))}")
     if remapped:
         print(f"[{out_name}] of which relabelled (classes.remap): {dict(remapped)}")
     return out_path

@@ -11,6 +11,15 @@ dataset:
   # the AICD-Bench paper, arXiv:2602.02079, Sec. 3), so its content is already folded
   # into AICD-Bench. Adding Droid again would only reintroduce near-duplicate rows.
   sources:
+    # Real-repository commits signed by coding agents vs pre-2021 human commits, TypeScript by default.
+    # Built locally by `aicontrib build-agent-commits` (see README); skipped until then. Listed first:
+    # it's small, and sources are pulled in order until the caps are reached.
+    - name: agent_commits
+      enabled: true
+      adapter: agent_commits
+      path: "data/agent_commits"
+      license: "each source repository's own license (code stays local; don't redistribute)"
+      hf_splits: {train: train, validation: validation, test: test}
     - name: aicd_bench
       enabled: true
       adapter: aicd_bench
@@ -128,6 +137,28 @@ generator_holdout:
   per_generator: {train: 500, test: 300}
   seed: 42
 
+# `aicontrib build-agent-commits` (see README): real commits signed by coding agents, paired with
+# human commits from the same repositories, one row per changed file (as classify-commit sees it).
+agent_commits:
+  index_repo: "balrampandey/qmmit-open-source-agent-commit-index"  # repo list; the code is cloned from GitHub
+  index_revision: "a5ae0357a23b617d60e194950cdd18a295ab4c80"
+  repo_languages: [TypeScript]  # GitHub's primary language of the repository, as the index records it
+  min_signed_commits: 20        # repositories with fewer agent-signed commits are skipped
+  max_repos: 80                 # most agent-active first; each is cloned (history only, no file contents)
+  ai_since: "2024-01-01"        # agent-signed commits from this date
+  human_until: "2021-06-01"     # human commits before this date (GitHub Copilot's preview: June 2021)
+  extensions: [.ts, .tsx, .mts, .cts]
+  exclude: ["vendor/*", "*/vendor/*", "node_modules/*", "*/node_modules/*", "dist/*", "build/*", "*.min.js",
+            "*.d.ts", "*.generated.*", "*.gen.ts", "__generated__/*", "*/__generated__/*"]
+  min_changed_lines: 5          # smaller file changes carry too little signal
+  max_files_per_commit: 5       # the largest changes, so one huge commit can't dominate a repository
+  rows_per_class_per_repo: 150  # each repository gives as many human rows as AI rows, up to this
+  human_pool_factor: 3          # human candidates per AI row, to pair each AI row with one of similar size
+  split_percent: {validation: 10, test: 15}  # of repositories: a repository is in one split only
+  workers: 4                    # repositories processed in parallel
+  clone_dir: "data/agent_repos"
+  out_dir: "data/agent_commits"
+
 training:
   epochs: 200        # upper bound; early stopping normally ends training well before this
   batch_size: 64
@@ -158,10 +189,10 @@ commit_classification:
     .jsx: javascript
     .mjs: javascript
     .cjs: javascript
-    .ts: javascript   # TypeScript/React routed through the JS-trained path (see README limitations)
-    .tsx: javascript
-    .mts: javascript
-    .cts: javascript
+    .ts: typescript   # in the training data only through agent_commits (see README)
+    .tsx: typescript
+    .mts: typescript
+    .cts: typescript
     .cpp: cpp
     .cc: cpp
     .cxx: cpp

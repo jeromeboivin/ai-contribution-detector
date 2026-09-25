@@ -136,8 +136,8 @@ version; update with the two lines under [Getting the latest version](#getting-t
 dataset-streaming library after the work had finished, so output written before it is complete.
 
 **"Unknown language ... Valid names: ..."** — a typo in `dataset.languages` in `configs/local.yaml`. Use
-the names listed. TypeScript isn't one of them: it's not in the training data, and TypeScript files are
-analysed as JavaScript.
+the names listed. `TypeScript` is valid, but only the [agent-commit data](#real-repository-data-agent-signed-commits)
+contains it; the other sources have none.
 
 **`embed` shows an estimate of many hours** — its estimate only covers the split it's working on
 (train, then validation, then test), and it starts pessimistic because the longest samples go first.
@@ -335,7 +335,53 @@ reintroduce near-duplicate rows the AICD authors deliberately removed, risking t
 
 Both sources cover Python, JavaScript, C++, and C# directly, but not TypeScript — nor does any other
 AI-vs-human code dataset I could find (also checked: HybridCodeAuthorship, MultiAIGCD, HMCorp,
-AIGCodeSet). `.ts`/`.tsx` files are routed through the JavaScript-trained path as an approximation.
+AIGCodeSet). TypeScript comes from a third source you build yourself:
+
+### Real-repository data: agent-signed commits
+
+```bash
+aicontrib build-agent-commits                 # about 80 repositories; try --max-repos 3 first
+```
+
+Benchmark snippets don't look like code in real repositories, and that gap dominates the errors on real
+repos. This source is real repository code, one row per file changed in a commit — exactly the text
+`classify-commit` analyses:
+
+- **ai**: commits that carry a coding agent's own signature — a `Co-Authored-By: Claude` / Copilot /
+  Cursor / Codex / Gemini trailer, a "Generated with Claude Code" footer, an aider subject, or an agent
+  bot author (Copilot coding agent, Devin…). The literal rules are ported from
+  [qmmit-cli](https://github.com/pandey019/qmmit-cli) (MIT), whose authors measured 99.5% precision on a
+  hand-reviewed sample.
+- **human**: commits from the same repositories before June 2021 (before GitHub Copilot), minus CI and
+  dependency bots.
+
+The repositories come from the [qmmit agent-commit index](https://huggingface.co/datasets/balrampandey/qmmit-open-source-agent-commit-index):
+2,000 popular GitHub repos with their share of agent-signed commits (371 TypeScript). The index has no
+code, so each repository is cloned — *blobless*: history without file contents, which are downloaded
+per selected commit. Settings are under `agent_commits:` in `configs/default.yaml`; by default the 80
+TypeScript repos with the most signed commits, `.ts`/`.tsx`/`.mts`/`.cts` files, 5+ changed lines.
+
+- **Paired per repository.** A repository contributes as many human rows as AI rows (up to 150 each),
+  or nothing — repositories created after mid-2021 have no human side and are skipped. So a repository's
+  style can't give its label away.
+- **Size-matched.** Agents write bigger changes (twice as many changed lines, in a trial), which the model
+  could learn instead of authorship. Each AI row is paired with a human row of similar size from the same
+  repository, drawn from 3× more human candidates than needed.
+- **Split by repository** (75/10/15%): the test split measures repositories the model never saw.
+- **React**: every row records whether it's React code (`.tsx`, or imports `react`); `summary.json` counts them.
+- **Resumable**: each finished repository is saved under `data/agent_commits/repos/`; re-running skips it.
+  Clones stay in `data/agent_repos/` (delete it afterwards to free the space).
+
+Then add `TypeScript` to `dataset.languages` if you filter languages, and run `prepare`, `embed`, `train`.
+`prepare` takes this source first (it's listed first and is small) and tops up with the benchmarks;
+it prints the rows per source.
+
+Caveats: a signature proves an agent took part, not that it wrote every line (a person may have edited
+the diff); unsigned 2024+ commits are never used, as they may be AI-written too. And **time is
+confounded with the label**: human rows are ~2016–2021 code, AI rows 2024–2026 code, so the model could
+partly learn "recent" instead of "AI" — newer frameworks, language features and dependencies. Your own
+known repos (`evaluate-repo`, `binoculars`) remain the check for that. The code belongs to each
+repository's authors under its own license: it stays on your machine; don't redistribute it.
 
 ### Languages in the training data
 
@@ -512,8 +558,7 @@ repo's folder name only, never its full local path.
 What counts:
 
 - **Only commits that change supported code** — `.py`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`,
-  `.mts`, `.cts`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.cs` (TypeScript/React go through the JavaScript
-  path). A commit that only touches XML, JSON, images, binaries or proprietary formats is **excluded**
+  `.mts`, `.cts`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.cs`. A commit that only touches XML, JSON, images, binaries or proprietary formats is **excluded**
   from the percentages (the page reports how many were). In a mixed commit, only the code files are
   scored. Edit `commit_classification.supported_extensions` to change the list.
 - **Merge commits are excluded** — their changes are already counted in the commits they merge.
@@ -722,7 +767,8 @@ per-split runtime (up to hours) makes checkpointing worthwhile.
   sources and cross-entropy is unweighted; macro-F1 checkpoint selection only partly compensates. If the
   minority class is under-predicted, set `per_class_cap` in `configs/local.yaml`
   to balance the classes.
-- **TypeScript isn't in the training data** — `.ts`/`.tsx` files reuse the JavaScript path, unvalidated.
+- **TypeScript is only in the agent-commit data** — without `build-agent-commits`, `.ts`/`.tsx` files are
+  scored by a model that has seen only JavaScript and other languages.
 - **Label semantics for AICD-Bench are inferred, not documented.** `aicontrib/data/sources.py`'s
   `_AICD_BENCH_LABEL_MAP` is a hypothesis based on manually reading sample rows, not an official mapping
   from the dataset authors.

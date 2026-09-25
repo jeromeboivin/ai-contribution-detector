@@ -111,6 +111,11 @@ def main(argv: list[str] | None = None) -> None:
         "language-census",
         help="(Maintainers) Rebuild the per-language statistics and AICD-Bench language index (~20 min)",
     )
+    agent_parser = subparsers.add_parser(
+        "build-agent-commits",
+        help="Build training data from real commits signed by coding agents (clones repos from GitHub)",
+    )
+    agent_parser.add_argument("--max-repos", type=int, help="Override agent_commits.max_repos (e.g. 3 for a trial)")
     subparsers.add_parser("prepare", help="Stream and cache the labeled/capped train/val/test JSONL splits")
     embed_parser = subparsers.add_parser("embed", help="Compute and cache embeddings for each split")
     embed_parser.add_argument("--force", action="store_true", help="Recompute even if cached")
@@ -190,6 +195,11 @@ def main(argv: list[str] | None = None) -> None:
         from aicontrib.data.languages import run_census
 
         run_census(load_config(), log=lambda msg: print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True))
+    elif args.command == "build-agent-commits":
+        from aicontrib.config import load_config
+        from aicontrib.data.agent_commits import build_agent_commits
+
+        build_agent_commits(load_config(), max_repos=args.max_repos)
     elif args.command == "prepare":
         from aicontrib.data.prepare import prepare_all
 
