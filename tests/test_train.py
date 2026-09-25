@@ -10,8 +10,10 @@ from aicontrib.model.train import train
 
 def _separable(n, rng):
     # Three well-separated clusters: validation macro-F1 peaks within a few epochs, then stalls.
+    # Few noise dimensions: the model standardizes its inputs, which scales near-constant noise
+    # dimensions up to the signal's size -- with many of them, 90 rows would just be memorized.
     labels = np.arange(n) % 3
-    x = np.eye(3, 256, dtype=np.float32)[labels] * 5 + rng.normal(0, 0.1, (n, 256)).astype(np.float32)
+    x = np.eye(3, 16, dtype=np.float32)[labels] * 5 + rng.normal(0, 0.1, (n, 16)).astype(np.float32)
     return x, labels
 
 

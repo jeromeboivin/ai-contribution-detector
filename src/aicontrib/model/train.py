@@ -22,6 +22,11 @@ def _load_split(cfg: dict, split: str) -> TensorDataset:
     return TensorDataset(x, y)
 
 
+def _representation(cfg: dict, split: str) -> str:
+    with np.load(Path(cfg["paths"]["embeddings_dir"]) / f"{split}.npz") as data:
+        return str(data["representation"]) if "representation" in data else "projected"
+
+
 @torch.no_grad()
 def _evaluate_loader(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
     model.eval()
@@ -53,7 +58,12 @@ def train(config_path: str | None = None) -> Path:
         hidden_dims=cfg["model"]["hidden_dims"],
         num_classes=num_classes,
         dropout=cfg["model"]["dropout"],
-    ).to(device)
+    )
+    model.fit_input_scaling(train_ds.tensors[0])
+    model.to(device)
+    representation = _representation(cfg, "train")
+    if _representation(cfg, "validation") != representation:
+        raise ValueError("train and validation embeddings use different representations -- re-run `aicontrib embed`")
 
     tcfg = cfg["training"]
     optimizer = torch.optim.Adam(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
@@ -107,6 +117,7 @@ def train(config_path: str | None = None) -> Path:
                     "hidden_dims": cfg["model"]["hidden_dims"],
                     "num_classes": num_classes,
                     "dropout": cfg["model"]["dropout"],
+                    "representation": representation,
                 },
                 checkpoint_path,
             )

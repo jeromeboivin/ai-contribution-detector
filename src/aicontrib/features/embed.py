@@ -8,6 +8,13 @@ This is the slow step of the pipeline. Speedups, none of which change the embedd
   run in bfloat16/float16 if a startup check shows it matches fp32 on that GPU.
 - Resume checkpoints are append-only shards written every few minutes, instead of a growing
   file rewritten every few batches (which, on the full dataset, meant rewriting up to 1 GB).
+
+Two representations (`embedding.representation`):
+- projected: the model's own embedding -- first token, projected to 256 values and normalized.
+  Trained so that code doing the same thing lands in the same place, which discards style.
+- hidden: the encoder's hidden states averaged over all tokens, for each layer in
+  `embedding.hidden_layers`, concatenated (768 values per layer). Keeps more of the surface
+  detail (naming, formatting, token choices) where an authorship fingerprint would live.
 """
 from __future__ import annotations
 
@@ -69,13 +76,33 @@ class CodeEmbedder:
         self.model.eval()
         self.autocast_dtype: torch.dtype | None = None  # fp32 until calibrate_precision() says otherwise
         self.calibrated = False
+        self.representation = self.cfg.get("representation", "projected")
+        self.hidden_layers = list(self.cfg.get("hidden_layers") or [])
+        if self.representation == "projected":
+            self.dim = model_config.embed_dim
+        elif self.representation == "hidden":
+            bad = [n for n in self.hidden_layers if not 1 <= n <= model_config.num_layers]
+            if not self.hidden_layers or bad:
+                raise ValueError(f"embedding.hidden_layers must list layers between 1 and {model_config.num_layers}")
+            self.dim = model_config.d_model * len(self.hidden_layers)
+        else:
+            raise ValueError(f"embedding.representation must be 'projected' or 'hidden', got {self.representation!r}")
+
+    def _represent(self, inputs) -> torch.Tensor:
+        if self.representation == "projected":
+            return self.model(**inputs)
+        out = self.model.encoder(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
+                                 output_hidden_states=True, return_dict=True)
+        mask = inputs["attention_mask"].unsqueeze(-1).float()
+        # hidden_states[0] is the token embeddings, hidden_states[n] the output of layer n.
+        return torch.cat([(out.hidden_states[n].float() * mask).sum(1) / mask.sum(1) for n in self.hidden_layers], dim=-1)
 
     def _forward(self, inputs, dtype: torch.dtype | None) -> torch.Tensor:
         inputs = inputs.to(self.device)
         if dtype is None:
-            return self.model(**inputs)
+            return self._represent(inputs)
         with torch.autocast(self.device.type, dtype=dtype):
-            return self.model(**inputs)
+            return self._represent(inputs)
 
     @torch.no_grad()
     def _embed_inputs(self, inputs) -> np.ndarray:
@@ -117,6 +144,13 @@ class CodeEmbedder:
         else:
             print(f"Precision: fp32 ({name} drifted from fp32 on this GPU: min cosine similarity {cosine:.4f})")
 
+    def representation_id(self) -> str:
+        """Names the representation, e.g. "projected" or "hidden:6,12" -- stored with cached embeddings
+        and model checkpoints, so neither is silently reused with a different one."""
+        if self.representation == "projected":
+            return "projected"
+        return "hidden:" + ",".join(map(str, self.hidden_layers))
+
     def token_budget(self, value: int | str = "auto") -> int:
         if value != "auto":
             return int(value)
@@ -124,6 +158,27 @@ class CodeEmbedder:
             memory_gb = torch.cuda.get_device_properties(self.device).total_memory / 1e9
             return int(min(65536, max(8192, 4096 * memory_gb)))
         return 16384
+
+
+def embed_texts(embedder: CodeEmbedder, codes: list[str], cfg: dict, desc: str = "embedding") -> np.ndarray:
+    """Embeds a list of strings in memory, in the same length-sorted token batches as embed_split,
+    without resume checkpoints (for small experiment sets)."""
+    out = np.zeros((len(codes), embedder.dim), dtype=np.float32)
+    order = sorted(range(len(codes)), key=lambda i: len(codes[i]), reverse=True)
+    if not embedder.calibrated:
+        spread = np.linspace(0, len(order) - 1, 16).astype(int) if order else []
+        embedder.calibrate_precision([codes[order[k]] for k in spread], cfg["embedding"].get("precision", "auto"))
+    budget = embedder.token_budget(cfg["embedding"].get("max_tokens_per_batch", "auto"))
+    pbar = tqdm(total=len(codes), desc=desc, unit="sample")
+    for c in range(0, len(order), TOKENIZE_CHUNK):
+        chunk = order[c : c + TOKENIZE_CHUNK]
+        enc = embedder.tokenizer([codes[i] for i in chunk], truncation=True, max_length=cfg["embedding"]["max_length"])
+        features = [{"input_ids": ids, "attention_mask": mask} for ids, mask in zip(enc["input_ids"], enc["attention_mask"])]
+        for batch in plan_batches([len(f["input_ids"]) for f in features], budget):
+            out[[chunk[j] for j in batch]] = embedder.embed_encoded([features[j] for j in batch])
+            pbar.update(len(batch))
+    pbar.close()
+    return out
 
 
 def _file_digest(path: Path) -> str:
@@ -152,9 +207,14 @@ def embed_split(cfg: dict, embedder: CodeEmbedder, split: str, force: bool = Fal
     partial_dir = out_dir / f"{split}.partial"
     (out_dir / f"{split}.partial.npz").unlink(missing_ok=True)  # checkpoint file of older versions
 
+    representation = embedder.representation_id()
     if out_path.exists() and not force:
-        print(f"[{split}] embeddings already cached at {out_path}, skipping (use --force to recompute)")
-        return out_path
+        with np.load(out_path) as cached:
+            cached_repr = str(cached["representation"]) if "representation" in cached else "projected"
+        if cached_repr == representation:
+            print(f"[{split}] embeddings already cached at {out_path}, skipping (use --force to recompute)")
+            return out_path
+        print(f"[{split}] cached embeddings are '{cached_repr}', config asks for '{representation}' -- recomputing")
 
     codes, labels = [], []
     with open(processed_path, encoding="utf-8") as f:
@@ -163,14 +223,15 @@ def embed_split(cfg: dict, embedder: CodeEmbedder, split: str, force: bool = Fal
             codes.append(row["code"])
             labels.append(row["label"])
     labels_arr = np.array(labels, dtype=np.int64)
-    embeddings = np.zeros((len(codes), cfg["embedding"]["dim"]), dtype=np.float32)
+    embeddings = np.zeros((len(codes), embedder.dim), dtype=np.float32)
     done = np.zeros(len(codes), dtype=bool)
 
     data_hash = _file_digest(processed_path)
     meta_path = partial_dir / "meta.json"
     if partial_dir.exists():
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-        if not force and meta.get("data_hash") == data_hash:
+        # Shards of another representation must not be mixed in (checkpoints of older versions: projected).
+        if not force and meta.get("data_hash") == data_hash and meta.get("representation", "projected") == representation:
             for shard in sorted(partial_dir.glob("shard-*.npz")):
                 data = np.load(shard)
                 embeddings[data["positions"]] = data["embeddings"]
@@ -178,10 +239,10 @@ def embed_split(cfg: dict, embedder: CodeEmbedder, split: str, force: bool = Fal
             print(f"[{split}] resuming: {int(done.sum()):,}/{len(codes):,} samples already embedded")
         else:
             if not force:
-                print(f"[{split}] checkpoint is from different prepared data -- starting this split over")
+                print(f"[{split}] checkpoint is from different prepared data or representation -- starting this split over")
             shutil.rmtree(partial_dir)
     partial_dir.mkdir(exist_ok=True)
-    meta_path.write_text(json.dumps({"data_hash": data_hash}), encoding="utf-8")
+    meta_path.write_text(json.dumps({"data_hash": data_hash, "representation": representation}), encoding="utf-8")
     shard_id = len(list(partial_dir.glob("shard-*.npz")))
 
     # Longest first: batches of similar length (little padding), out-of-memory surfaces immediately,
@@ -213,7 +274,7 @@ def embed_split(cfg: dict, embedder: CodeEmbedder, split: str, force: bool = Fal
         _write_shard(partial_dir, shard_id, pending_pos, pending_vec)
     pbar.close()
 
-    np.savez(out_path, embeddings=embeddings, labels=labels_arr)
+    np.savez(out_path, embeddings=embeddings, labels=labels_arr, representation=np.array(representation))
     shutil.rmtree(partial_dir, ignore_errors=True)
     print(f"[{split}] embedded {len(codes):,} samples -> {out_path}")
     return out_path

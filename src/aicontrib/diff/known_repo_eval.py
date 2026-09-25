@@ -24,24 +24,34 @@ def evenly_spaced(items: list, n: int) -> list:
     return [items[int(i * step)] for i in range(n)]
 
 
-def _sample_commit_shas(repo_path: str, n_samples: int) -> list[str]:
+def date_range_args(since=None, until=None) -> list[str]:
+    """git log options for an optional date range. YAML turns 2021-12-31 into a date object: str() it."""
+    return ([f"--since={since}"] if since else []) + ([f"--until={until}"] if until else [])
+
+
+def _sample_commit_shas(repo_path: str, n_samples: int, since=None, until=None) -> list[str]:
     # --no-merges: a merge's diff re-counts code already attributed to its branch's commits.
-    return evenly_spaced(run_git(repo_path, "log", "--no-merges", "--format=%H").splitlines(), n_samples)
+    log = run_git(repo_path, "log", "--no-merges", "--format=%H", *date_range_args(since, until))
+    return evenly_spaced(log.splitlines(), n_samples)
 
 
 def evaluate_known_repo(
     repo_path: str, expected_class: str, n_samples: int = 50, config_path: str | None = None,
-    added_files_only: bool = False,
+    added_files_only: bool = False, since=None, until=None,
 ) -> dict:
     """added_files_only: score only files a commit creates (whole files, like the training
     snippets) and skip commits that create none -- compare with a normal run to see how much
-    of the error comes from classifying stitched-together diff hunks."""
+    of the error comes from classifying stitched-together diff hunks. since/until: only sample
+    commits in that date range (anything `git log --since` accepts, e.g. 2021-12-31)."""
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
     if expected_class not in class_names:
         raise ValueError(f"expected_class must be one of {class_names}, got {expected_class!r}")
 
-    shas = _sample_commit_shas(repo_path, n_samples)
+    shas = _sample_commit_shas(repo_path, n_samples, since, until)
+    if not shas:
+        raise ValueError(f"no commits in {repo_path}" + (f" between {since or 'the start'} and {until or 'now'}"
+                                                          if since or until else ""))
     classifier = CommitClassifier(config_path, added_files_only=added_files_only)
 
     per_commit = []

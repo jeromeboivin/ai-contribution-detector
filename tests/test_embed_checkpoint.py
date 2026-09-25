@@ -88,8 +88,35 @@ def test_checkpoint_from_different_data_is_discarded(tmp_path, embedder):
     partial = tmp_path / "embeddings" / "train.partial"
     partial.mkdir()
     (partial / "meta.json").write_text(json.dumps({"data_hash": "some other data"}))
-    sentinel = np.full((1, cfg["embedding"]["dim"]), 7.0, dtype=np.float32)
+    sentinel = np.full((1, embedder.dim), 7.0, dtype=np.float32)
     np.savez(partial / "shard-00000.npz", positions=np.array([0]), embeddings=sentinel)
 
     data = np.load(embed_split(cfg, embedder, "train"))
     assert not np.allclose(data["embeddings"][0], 7.0)  # stale shard ignored, row 0 really embedded
+
+
+def test_cached_embeddings_of_another_representation_are_recomputed(tmp_path, embedder):
+    from aicontrib.features.embed import embed_split
+
+    cfg = _setup(tmp_path)
+    out = tmp_path / "embeddings" / "train.npz"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    stale = np.full((len(CODES), 1536), 7.0, dtype=np.float32)
+    np.savez(out, embeddings=stale, labels=np.zeros(len(CODES)), representation=np.array("hidden:6,12"))
+
+    data = np.load(embed_split(cfg, embedder, "train"))
+    assert data["embeddings"].shape == (len(CODES), embedder.dim)
+    assert str(data["representation"]) == embedder.representation_id()
+
+
+def test_cache_without_representation_counts_as_projected(tmp_path, embedder):
+    from aicontrib.features.embed import embed_split
+
+    cfg = _setup(tmp_path)
+    out = tmp_path / "embeddings" / "train.npz"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    old = np.full((len(CODES), embedder.dim), 7.0, dtype=np.float32)
+    np.savez(out, embeddings=old, labels=np.zeros(len(CODES)))  # written by an older version
+
+    data = np.load(embed_split(cfg, embedder, "train"))
+    assert np.allclose(data["embeddings"], 7.0)  # reused, not recomputed

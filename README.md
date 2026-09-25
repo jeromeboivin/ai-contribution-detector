@@ -160,7 +160,8 @@ still fails, set a smaller batch in `configs/local.yaml`, e.g.
 ## How it works
 
 1. A frozen pretrained code encoder ([`Salesforce/codet5p-110m-embedding`](https://huggingface.co/Salesforce/codet5p-110m-embedding))
-   turns a code snippet into a 256-dim vector.
+   turns a code snippet into a 256-dim vector (or, with `embedding.representation: hidden`, a longer
+   vector read from its internal layers — see [Embedding representation](#embedding-representation)).
 2. A small trainable MLP classifies that vector into `human` / `co_authored` / `ai`.
 3. Only the MLP is trained — the encoder is frozen, so training is fast even on CPU. A GPU, if present,
    is used automatically to speed up the one-time embedding pass over the dataset.
@@ -187,8 +188,8 @@ flowchart LR
 |---|---|
 | Tokenizer | RoBERTa-style BPE (vocab 32,103), `<s>` prepended; inputs truncated to **512 tokens** (`embedding.max_length`) |
 | Encoder | [`Salesforce/codet5p-110m-embedding`](https://huggingface.co/Salesforce/codet5p-110m-embedding): T5 encoder stack, 12 layers, d_model 768, 12 heads, FFN 3072 (ReLU). 134.5M parameters as loaded — the "110m" in the name excludes the ~25M-parameter token-embedding table. Contrastively pretrained for code retrieval on C, C++, C#, Go, Java, JavaScript, PHP, Python, Ruby |
-| Pooling / projection | Final hidden state of the first (`<s>`) token → linear projection to 256-d → L2 normalization (part of the pretrained model, frozen) |
-| Head | `Linear(256,128) → ReLU → Dropout(0.2) → Linear(128,64) → ReLU → Dropout(0.2) → Linear(64,3)` — **41,347 trainable parameters** (`aicontrib/model/classifier.py`) |
+| Pooling / projection | `embedding.representation: projected` (default): final hidden state of the first (`<s>`) token → linear projection to 256-d → L2 normalization (part of the pretrained model, frozen). `hidden`: the hidden states of each layer in `embedding.hidden_layers` (default 6 and 12), averaged over all non-padding tokens and concatenated — 768-d per layer, so 1,536-d by default. See [Embedding representation](#embedding-representation) |
+| Head | Per-feature standardization (mean/std of the training set, saved in the checkpoint), then `Linear(d,128) → ReLU → Dropout(0.2) → Linear(128,64) → ReLU → Dropout(0.2) → Linear(64,3)` — **41,347 trainable parameters** with the 256-d projected input (`aicontrib/model/classifier.py`) |
 | Output | softmax over `human` / `co_authored` / `ai` |
 
 **Training** (`aicontrib/model/train.py`, hyperparameters in `configs/default.yaml`):
@@ -205,6 +206,29 @@ flowchart LR
   `training:` section (see `configs/local.example.yaml`).
 - Regularization: dropout 0.2, weight decay, early stopping, and — structurally — a small head on a frozen
   encoder.
+
+### Embedding representation
+
+The default `projected` embedding comes from a model trained for code *search*: two snippets that do the
+same thing are pushed to the same vector, however they're written. That's the opposite of what authorship
+detection needs — an AI fingerprint lives in *how* code is written (token choices, naming, formatting,
+comment style), which that training teaches the model to ignore.
+
+`representation: hidden` takes the encoder's internal states instead, before that last step, averaged
+over the whole text (not just the first token) and from a middle layer as well as the last one. Middle
+layers tend to keep more surface detail. The encoder stays frozen; only what's read out of it changes.
+
+```yaml
+# configs/local.yaml
+embedding:
+  representation: hidden
+  hidden_layers: [6, 12]   # layers 1-12, 768 values each
+```
+
+Then re-run `aicontrib embed` (it recomputes automatically: each cached `.npz` records the representation
+it holds) and `aicontrib train`. A checkpoint also records its representation, so `evaluate`,
+`evaluate-repo`, `report` and `classify-commit` refuse to mix a model with embeddings of another kind.
+Compare the two with `aicontrib evaluate` and [`aicontrib generator-holdout`](#generalization-to-unseen-ai-models).
 
 **Labels** come from AICD-Bench's fine-grained task (human / machine / hybrid / adversarial → `human` /
 `ai` / `co_authored` / `ai`) plus CodeMirage's binary labels — see [Dataset](#dataset). Evaluation
@@ -227,7 +251,7 @@ month, the share of each class among that month's classified commits.
 
 **Caveats a data scientist should know:** only the first 512 tokens of each text reach the encoder;
 hunk post-images are fragments, not the whole files the model was trained on (snippet→diff domain shift);
-first-token pooling was trained for retrieval, not authorship; with the default uncapped dataset, class
+first-token pooling was trained for retrieval, not authorship (`representation: hidden` is the alternative); with the default uncapped dataset, class
 frequencies follow the sources and the loss is unweighted (macro-F1 selection only partly compensates) —
 see also [Known limitations](#known-limitations).
 
@@ -413,6 +437,9 @@ python -m aicontrib evaluate
 # 6. Classify a real commit
 python -m aicontrib classify-commit /path/to/some/repo <commit-sha>
 
+# 6b. How well does it catch code from AI models it never saw? (see "Generalization to unseen AI models")
+python -m aicontrib generator-holdout
+
 # 7. Sanity-check against a repo with KNOWN ground-truth authorship
 python -m aicontrib evaluate-repo /path/to/some/repo human --samples 50
 
@@ -535,6 +562,13 @@ known_repos:
     expected_class: ai
 ```
 
+**Date ranges:** an entry can take `since` and/or `until` (e.g. `until: 2021-12-31`) to use only part of
+the history — for a huge repo, or one whose authorship changed over time. List the same repo twice under
+different names to compare its eras, e.g. `human` with `until: 2021-12-31` and `ai` with
+`since: 2025-01-01`. `evaluate-repo` then samples only commits in the range; `binoculars` only files
+*created* by commits in the range, read as they were at its end, so later edits don't leak in. With an
+explicit path, `evaluate-repo` takes `--since` / `--until` instead.
+
 **Windows paths:** write them in single quotes, `path: 'C:\Users\me\repos\tslint'`, or with forward
 slashes, `path: "C:/Users/me/repos/tslint"`. Don't use double quotes with plain backslashes
 (`"C:\Users\..."`): YAML treats `\U`, `\t`, etc. inside double quotes as escape sequences and the file
@@ -563,7 +597,8 @@ Its score compares how surprising the code is to one model with how surprising t
 predictions are to it. AI-generated code scores **lower**. The TypeScript gap and the older AI models in
 the training data don't apply to it the same way, so it tests whether any signal exists on your repos.
 
-It samples up to 200 whole files at HEAD from each `known_repos` entry, skipping vendored and generated
+It samples up to 200 whole files from each `known_repos` entry — at HEAD, or for an entry with a date
+range, files created within it (see *Date ranges* above) — skipping vendored and generated
 paths (`binoculars.exclude` in the config) and files under 64 tokens. It prints each repo's score
 distribution and, for every human/AI pair of repos, the **AUC**: the chance that a random file from the
 AI repo looks more AI-like than a random file from the human repo (0.5 = no signal, 1.0 = perfect). If a
@@ -571,6 +606,28 @@ trained MLP exists, its AUC on the same files is printed next to it, so the two 
 terms. Per-file scores go to `models/binoculars_results.json`.
 
 The paper's fixed threshold was fitted for other models and doesn't carry over; the AUC doesn't need one.
+
+## Generalization to unseen AI models
+
+```bash
+aicontrib generator-holdout
+```
+
+The test split comes from the same AI models as the training data, so it can't tell you what happens with
+code from a newer model — the usual situation on a real repo. This experiment measures exactly that.
+
+It uses CodeMirage, the only source that records which of its 10 AI models generated each row
+(AICD-Bench T3 doesn't). It samples every human row plus `generator_holdout.per_generator` rows per model
+(500 train / 300 test), in the languages of `dataset.languages`, embeds them with the configured
+`embedding.representation` (cached per representation), and trains binary human-vs-AI classifiers with
+the same MLP settings as `train`. For each AI model G it reports the AUC of G's code against human code:
+
+- **seen**: the classifier was trained with G's code, like the normal test split;
+- **unseen**: the classifier was trained on the other 9 models only.
+
+The drop from seen to unseen is what a new AI model costs. It's independent of `prepare`/`embed`/`train`
+and doesn't touch their files. Run it once per `embedding.representation` to compare them; results go to
+`models/generator_holdout-<representation>.json`.
 
 ## Performance
 

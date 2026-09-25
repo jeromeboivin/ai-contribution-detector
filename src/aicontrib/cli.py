@@ -8,14 +8,15 @@ import traceback
 
 
 def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: str | None, samples: int, as_json: bool,
-                        added_files_only: bool = False) -> None:
+                        added_files_only: bool = False, since=None, until=None) -> None:
     import time
     from pathlib import Path
 
     from aicontrib.diff.known_repo_eval import evaluate_known_repo
     from aicontrib.monitor import append_known_repo_result
 
-    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, added_files_only=added_files_only)
+    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, added_files_only=added_files_only,
+                                 since=since, until=until)
     name = name or Path(repo_path).resolve().name
     if added_files_only:
         name += " (added files only)"  # its own dashboard card and trend: a different measurement
@@ -44,6 +45,8 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
     else:
         print(f"Repo: {result['repo']}")
         print(f"Expected class: {result['expected_class']}")
+        if since or until:
+            print(f"Commits from {since or 'the start'} to {until or 'now'}")
         if added_files_only:
             print("Scope: only files each commit adds (modified files ignored)")
         skip_reason = "no newly added supported-language files" if added_files_only else "no supported-language changes"
@@ -66,6 +69,9 @@ def _print_binoculars(result: dict) -> None:
     print(f"\nBinoculars ({result['observer']} / {result['performer']}), whole files at HEAD. "
           "Lower score = more AI-like.")
     has_mlp = any(r["mlp_mean_p_ai"] is not None for r in result["repos"])
+    for r in result["repos"]:
+        if r.get("since") or r.get("until"):
+            print(f"  {r['name']}: files created from {r.get('since') or 'the start'} to {r.get('until') or 'now'}")
     print(f"{'repo':<24}{'expected':<13}{'files':>6}{'score p25':>11}{'median':>9}{'p75':>9}"
           + (f"{'MLP mean P(ai)':>17}" if has_mlp else ""))
     for r in result["repos"]:
@@ -80,6 +86,20 @@ def _print_binoculars(result: dict) -> None:
             mlp = f", MLP classifier {pair['mlp_auc']:.3f}" if "mlp_auc" in pair else ""
             print(f"  {pair['human']} (human) vs {pair['ai']} (ai): Binoculars {pair['binoculars_auc']:.3f}{mlp}")
     print(f"\nPer-file scores: {result['results_path']}")
+
+
+def _print_generator_holdout(summary: dict) -> None:
+    print(f"\nHeld-out generators, embedding representation '{summary['representation']}', "
+          f"languages: {summary['languages']}")
+    print("AUC of each generator's code vs human code (0.5 = no signal, 1.0 = perfect):")
+    print(f"{'generator':<32}{'rows':>6}{'seen':>8}{'unseen':>9}{'drop':>8}")
+    for r in summary["generators"]:
+        print(f"{r['generator']:<32}{r['n_test']:>6}{r['seen_auc']:>8.3f}{r['unseen_auc']:>9.3f}"
+              f"{r['seen_auc'] - r['unseen_auc']:>8.3f}")
+    print(f"{'mean':<38}{summary['mean_seen_auc']:>8.3f}{summary['mean_unseen_auc']:>9.3f}"
+          f"{summary['mean_seen_auc'] - summary['mean_unseen_auc']:>8.3f}")
+    print("seen = trained with that generator's code; unseen = trained without it (as with a new AI model).")
+    print(f"Results: {summary['results_path']}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -120,11 +140,17 @@ def main(argv: list[str] | None = None) -> None:
     eval_repo_parser.add_argument(
         "--name", help="Label for the dashboard (default: the repo directory's basename)"
     )
+    eval_repo_parser.add_argument("--since", help="Only commits after this date, e.g. 2019-01-01 (not with --all)")
+    eval_repo_parser.add_argument("--until", help="Only commits before this date, e.g. 2021-12-31 (not with --all)")
     eval_repo_parser.add_argument(
         "--added-files-only", action="store_true",
         help="Score only files each commit adds (whole files, like the training data); skip commits that add none",
     )
 
+    subparsers.add_parser(
+        "generator-holdout",
+        help="How well the classifier catches code from AI models it never saw in training (CodeMirage)",
+    )
     binoculars_parser = subparsers.add_parser(
         "binoculars",
         help="(Prototype) Zero-shot Binoculars detector: how well it separates your known_repos, vs the MLP",
@@ -208,19 +234,25 @@ def main(argv: list[str] | None = None) -> None:
                     "and add at least one entry (see README 'Real-world validation')."
                 )
                 return
-            targets = [(r["path"], r["expected_class"], r.get("name")) for r in known_repos]
+            targets = [(r["path"], r["expected_class"], r.get("name"), r.get("since"), r.get("until")) for r in known_repos]
         elif args.repo_path and args.expected_class:
-            targets = [(args.repo_path, args.expected_class, args.name)]
+            targets = [(args.repo_path, args.expected_class, args.name, args.since, args.until)]
         else:
             print("Either pass <repo_path> <expected_class>, or use --all to run every configured known_repos entry.")
             return
 
-        for repo_path, expected_class, name in targets:
+        for repo_path, expected_class, name, since, until in targets:
             try:
-                _evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json, args.added_files_only)
+                _evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json, args.added_files_only,
+                                    since, until)
             except Exception as exc:  # noqa: BLE001 - one bad entry (e.g. missing local path) shouldn't abort the rest
                 print(f"[{name or repo_path}] skipped: {exc}")
                 print()
+    elif args.command == "generator-holdout":
+        from aicontrib.config import load_config
+        from aicontrib.model.generator_holdout import run_generator_holdout
+
+        _print_generator_holdout(run_generator_holdout(load_config()))
     elif args.command == "binoculars":
         from aicontrib.binoculars import evaluate_binoculars
         from aicontrib.config import load_config

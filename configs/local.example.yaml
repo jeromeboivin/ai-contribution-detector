@@ -59,6 +59,10 @@
 
 # ---- Repos with known authorship, for `aicontrib evaluate-repo --all` ----------------
 # `path` is an absolute path to a local git clone; `expected_class` is human / co_authored / ai.
+# Optional `since` / `until` (dates, e.g. 2021-12-31) limit an entry to part of the history -- useful
+# for a big repo, or one whose authorship changed over time: list it twice, e.g. a `human` entry
+# with `until: 2021-12-31` and an `ai` entry with `since: 2025-01-01`, under different names.
+# evaluate-repo then samples only commits in the range; binoculars only files created in it.
 #
 # Path syntax
 #   Linux / macOS:  path: "/home/me/repos/tslint"
@@ -76,3 +80,8 @@
 #   - name: my-private-ai-repo
 #     path: 'C:\Users\me\repos\my-private-ai-repo'
 #     expected_class: ai
+#   - name: big-repo-before-ai
+#     path: 'C:\Users\me\repos\big-repo'
+#     expected_class: human
+#     since: 2019-01-01
+#     until: 2021-12-31

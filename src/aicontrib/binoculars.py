@@ -10,7 +10,8 @@ models, so this module only measures separation: the AUC between files of a know
 files of a known-AI repo (0.5 = no signal, 1.0 = perfect), next to the MLP classifier's AUC on the
 same files when a trained checkpoint exists.
 
-Files are read whole at HEAD (not as diffs) from the repos listed under known_repos.
+Files are read whole (not as diffs) from the repos listed under known_repos: at HEAD, or, for an
+entry with `since`/`until`, the files created by commits in that date range, as they were at its end.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from aicontrib.device import describe_device, get_device
 from aicontrib.diff.commit import run_git
-from aicontrib.diff.known_repo_eval import evenly_spaced
+from aicontrib.diff.known_repo_eval import date_range_args, evenly_spaced
 
 POSITION_CHUNK = 128  # positions per step when comparing the two models' full-vocabulary distributions
 
@@ -82,12 +83,27 @@ class BinocularsScorer:
         return binoculars_scores(observer_logits, performer_logits, enc["input_ids"], enc["attention_mask"]).item()
 
 
-def sample_head_files(repo_path: str, extensions: dict[str, str], exclude: list[str], n: int) -> list[str]:
-    """Up to n tracked source files, evenly spread over the sorted path list, minus excluded patterns
-    (vendored and generated code: its authorship isn't the repo's)."""
-    paths = [p for p in run_git(repo_path, "ls-files", "-z").split("\0") if p]
-    keep = [p for p in paths if Path(p).suffix.lower() in extensions and not any(fnmatch(p, pat) for pat in exclude)]
-    return evenly_spaced(sorted(keep), n)
+def sample_files(repo_path: str, extensions: dict[str, str], exclude: list[str], n: int,
+                 since=None, until=None) -> tuple[str, list[str]]:
+    """(revision, up to n source file paths to read at that revision), evenly spread over the sorted
+    paths, minus excluded patterns (vendored and generated code: its authorship isn't the repo's).
+
+    No date range: every file at HEAD. With one: only files *created* by commits in the range (later
+    edits, maybe by someone -- or something -- else, stay out), read at the range's last commit and
+    skipped if gone by then."""
+    if not since and not until:
+        revision, paths = "HEAD", run_git(repo_path, "ls-files", "-z").split("\0")
+    else:
+        revision = run_git(repo_path, "rev-list", "-1", *date_range_args(None, until), "HEAD").strip()
+        if not revision:
+            return "HEAD", []
+        created = set(run_git(repo_path, "log", "--no-merges", "--diff-filter=A", "--name-only", "--format=", "-z",
+                              *date_range_args(since, until), revision).split("\0"))
+        present = run_git(repo_path, "ls-tree", "-r", "--name-only", "-z", revision).split("\0")
+        paths = [p for p in present if p in created]
+    keep = [p for p in paths if p and Path(p).suffix.lower() in extensions
+            and not any(fnmatch(p, pat) for pat in exclude)]
+    return revision, evenly_spaced(sorted(keep), n)
 
 
 def _auc(human: list[float], ai: list[float]) -> float:
@@ -105,14 +121,17 @@ def evaluate_binoculars(cfg: dict, files_per_repo: int | None = None, log: Calla
     repos = []
     for entry in cfg.get("known_repos", []):
         name = entry.get("name") or Path(entry["path"]).resolve().name
+        since, until = entry.get("since"), entry.get("until")
         files, too_short = [], 0
-        for path in sample_head_files(entry["path"], extensions, bcfg.get("exclude") or [], n):
-            text = run_git(entry["path"], "show", f"HEAD:{path}").replace("\r\n", "\n")
+        revision, paths = sample_files(entry["path"], extensions, bcfg.get("exclude") or [], n, since, until)
+        for path in paths:
+            text = run_git(entry["path"], "show", f"{revision}:{path}").replace("\r\n", "\n")
             if len(tokenizer(text, truncation=True, max_length=bcfg["min_tokens"])["input_ids"]) < bcfg["min_tokens"]:
                 too_short += 1
                 continue
             files.append({"path": path, "language": extensions[Path(path).suffix.lower()], "text": text})
         repos.append({"name": name, "repo": entry["path"], "expected_class": entry["expected_class"],
+                      "since": str(since) if since else None, "until": str(until) if until else None,
                       "files": files, "n_files_too_short": too_short})
         log(f"[{name}] {len(files)} files to score ({too_short} skipped: under {bcfg['min_tokens']} tokens)")
 

@@ -12,15 +12,26 @@ from aicontrib.device import get_device
 from aicontrib.model.classifier import MLPClassifier
 
 
-def load_checkpoint(checkpoint_path: Path, device: torch.device) -> MLPClassifier:
+def load_checkpoint(checkpoint_path: Path, device: torch.device, representation: str | None = None) -> MLPClassifier:
+    """representation: the embedding representation the caller will feed (CodeEmbedder.representation_id());
+    a model trained on another one is refused instead of producing garbage or a shape error."""
     ckpt = torch.load(checkpoint_path, map_location=device)
+    trained_on = ckpt.get("representation", "projected")  # checkpoints of older versions: projected
+    if representation is not None and representation != trained_on:
+        raise ValueError(f"The model at {checkpoint_path} was trained on '{trained_on}' embeddings but is being given "
+                         f"'{representation}' ones (embedding.representation / hidden_layers in the config). Re-run "
+                         "`aicontrib embed` and `aicontrib train`, or change the config back.")
     model = MLPClassifier(
         input_dim=ckpt["input_dim"],
         hidden_dims=ckpt["hidden_dims"],
         num_classes=ckpt["num_classes"],
         dropout=ckpt["dropout"],
     )
-    model.load_state_dict(ckpt["state_dict"])
+    state = dict(ckpt["state_dict"])
+    for name, buffer in model.state_dict().items():  # older checkpoints have no input scaling: identity
+        if name.startswith("input_"):
+            state.setdefault(name, buffer)
+    model.load_state_dict(state)
     model.to(device)
     model.eval()
     return model
@@ -59,9 +70,10 @@ def evaluate(config_path: str | None = None) -> None:
     device = get_device()
 
     checkpoint_path = Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt"
-    model = load_checkpoint(checkpoint_path, device)
 
     data = np.load(Path(cfg["paths"]["embeddings_dir"]) / "test.npz")
+    embedded_as = str(data["representation"]) if "representation" in data else "projected"
+    model = load_checkpoint(checkpoint_path, device, representation=embedded_as)
     x = torch.tensor(data["embeddings"], dtype=torch.float32).to(device)
     y_true = data["labels"]
 

@@ -74,7 +74,13 @@ embedding:
   model_name: "Salesforce/codet5p-110m-embedding"
   max_length: 512
   batch_size: 32   # samples per batch when classifying commits (report / evaluate-repo)
-  dim: 256
+  # projected: the model's own 256-value embedding. Built so that code doing the same thing gets the
+  #   same vector -- which discards style, where an AI fingerprint would be.
+  # hidden: the encoder's internal states averaged over the code, for each layer in hidden_layers
+  #   (1-12), 768 values per layer. Keeps more surface detail. Changing either setting makes `embed`
+  #   recompute (the cache records which one it holds); then re-run `train`.
+  representation: projected
+  hidden_layers: [6, 12]
   # `embed` sorts samples longest first and batches them by token count (little padding waste).
   # auto: sized from GPU memory (8,192-65,536 tokens; halved automatically on out-of-memory),
   # 16,384 on CPU. Lower it if your GPU runs out of memory anyway.
@@ -103,6 +109,14 @@ binoculars:
   # Vendored and generated code isn't written by the repo's authors (fnmatch patterns on repo paths).
   exclude: ["vendor/*", "*/vendor/*", "node_modules/*", "*/node_modules/*", "dist/*", "build/*",
             "*.min.js", "*.d.ts"]
+
+# Held-out-generator evaluation (`aicontrib generator-holdout`, see README): how well the classifier
+# catches code from an AI model it never saw in training. Uses CodeMirage (the only source that
+# records the generator) in the languages of dataset.languages: every human row, plus this many
+# random rows of each of its 10 generators, per split.
+generator_holdout:
+  per_generator: {train: 500, test: 300}
+  seed: 42
 
 training:
   epochs: 200        # upper bound; early stopping normally ends training well before this

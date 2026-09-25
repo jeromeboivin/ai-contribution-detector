@@ -37,14 +37,14 @@ def _make_checkpoint(models_dir: Path, dim: int) -> None:
 def config_path(tmp_path):
     cfg = load_config()  # paths here are already absolute (see config.py), safe to dump as-is
     cfg["paths"]["models_dir"] = str(tmp_path / "models")
-    _make_checkpoint(tmp_path / "models", cfg["embedding"]["dim"])
 
     try:
         from aicontrib.features.embed import CodeEmbedder
 
-        CodeEmbedder(cfg)  # skip if the real encoder can't be downloaded, same as other tests
+        embedder = CodeEmbedder(cfg)  # skip if the real encoder can't be downloaded, same as other tests
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"encoder unavailable, skipping known-repo eval test: {exc}")
+    _make_checkpoint(tmp_path / "models", embedder.dim)
 
     path = tmp_path / "test_config.yaml"
     path.write_text(yaml.safe_dump(cfg))
