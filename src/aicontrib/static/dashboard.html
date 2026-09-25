@@ -78,7 +78,6 @@
   <section class="block">
     <h2>Known-repo validation</h2>
     <div id="repo-results" class="repo-grid">
-      <p class="empty-hint">No <code>evaluate-repo</code> runs logged yet.</p>
     </div>
   </section>
 
@@ -160,7 +159,11 @@ function colorForAccuracy(acc) {
 function renderRepoResults(rows) {
   const container = document.getElementById("repo-results");
   if (rows.length === 0) {
-    container.innerHTML = '<p class="empty-hint">No <code>evaluate-repo</code> runs logged yet.</p>';
+    container.innerHTML =
+      '<p class="empty-hint">Nothing yet: this section fills in when you run <code>aicontrib evaluate-repo</code>, ' +
+      'which checks the trained model against repositories whose authorship you know. It does not run during ' +
+      'training. List your repositories under <code>known_repos</code> in <code>configs/local.yaml</code>, then ' +
+      'run <code>aicontrib evaluate-repo --all</code> (README: "Real-world validation").</p>';
     return;
   }
 
