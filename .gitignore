@@ -6,9 +6,10 @@ venv/
 build/
 dist/
 
-data/
-models/
-.cache/
+# Anchored to the repo root on purpose: an unanchored `data/` also matches src/aicontrib/data/
+/data/
+/models/
+/.cache/
 
 # Machine-local settings (e.g. paths to private known-authorship repos) -- never commit this.
 configs/local.yaml
