@@ -2,7 +2,9 @@
 
 Classifies whether code was **written by hand**, **co-authored** (human + AI), or **fully AI-generated** —
 first at the snippet/file level, then applied to git commits as an approximation. Targets Python,
-JavaScript/TypeScript, C++, and C#. Trains on CPU; auto-uses a GPU if one is available.
+JavaScript/TypeScript, C++, and C#. Runs on CPU or GPU (auto-detected) — the default config trains on the
+full dataset, which really wants a GPU; see [Setup](#setup) for a Windows+GPU walkthrough, or
+[Performance](#performance) for capping it down to run on CPU only.
 
 ## How it works
 
@@ -51,6 +53,56 @@ AIGCodeSet). `.ts`/`.tsx` files are routed through the JavaScript-trained path a
 
 ## Setup
 
+### Windows, with an NVIDIA GPU (recommended for a real training run)
+
+The default config now trains on the **full dataset** (no row cap — see "Performance" below), which is
+only practical with GPU acceleration. These steps assume a fresh Windows machine with an NVIDIA GPU.
+
+1. **Install Git**: [git-scm.com/download/win](https://git-scm.com/download/win) (defaults are fine).
+2. **Install Python 3.10+**: [python.org/downloads](https://python.org/downloads) — on the first installer
+   screen, tick **"Add python.exe to PATH"** before clicking Install.
+3. **Confirm your GPU driver is installed** by opening PowerShell and running:
+   ```powershell
+   nvidia-smi
+   ```
+   This should print your GPU name and driver version. If the command isn't found, install/update the
+   driver from [nvidia.com/drivers](https://www.nvidia.com/Download/index.aspx) first — you do **not** need
+   to separately install the CUDA Toolkit, the PyTorch wheel below bundles what it needs.
+4. **Clone the repo and enter it**:
+   ```powershell
+   git clone https://github.com/jeromeboivin/ai-contribution-detector.git
+   cd ai-contribution-detector
+   ```
+5. **Create and activate a virtual environment**:
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
+   If PowerShell refuses to run the activation script (execution policy error), run this once first:
+   `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then retry the `activate` line.
+6. **Install a CUDA-enabled PyTorch build first**, matching your driver — check
+   [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/) for the exact command if
+   this one doesn't fit (Stable / Windows / Pip / Python / CUDA 12.x), e.g.:
+   ```powershell
+   pip install torch --index-url https://download.pytorch.org/whl/cu121
+   ```
+7. **Verify the GPU is actually visible to PyTorch** before going further:
+   ```powershell
+   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+   ```
+   This must print `True` and your GPU's name. If it prints `False`, step 6 installed the wrong build —
+   redo it with the CUDA version matching your driver.
+8. **Install the project** (this won't touch the already-installed GPU build of `torch`, since it already
+   satisfies the version requirement):
+   ```powershell
+   pip install -e ".[dev]"
+   ```
+
+You're now ready for [Usage](#usage) below — every command there is identical on Windows (just run them
+from the same activated PowerShell/`.venv` session).
+
+### Linux / macOS
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -67,7 +119,8 @@ in this repo auto-detects it via `torch.cuda.is_available()`.
 # 1. Sanity-check the raw label mapping against real content (see Known limitations)
 python -m aicontrib audit
 
-# 2. Stream AICD-Bench and write capped, remapped train/val/test JSONL to data/processed/
+# 2. Stream AICD-Bench + CodeMirage and write remapped train/val/test JSONL to data/processed/
+#    (full dataset by default -- see Performance for how to cap it on CPU-only hardware)
 python -m aicontrib prepare
 
 # 3. Embed every split with the frozen encoder (the slow, one-time step)
@@ -93,8 +146,14 @@ Config (dataset caps, encoder choice, MLP size, hyperparameters, supported file 
 
 `aicontrib train` starts a small local HTTP server (port configurable via `monitor.port` in
 `configs/default.yaml`, default `8765`) that serves a self-contained HTML page — no external JS
-libraries, no internet needed — showing live-updating charts of training loss and validation macro-F1,
-polling every second. Open the printed URL in a browser during training.
+libraries, no internet needed. Open the printed URL (`http://127.0.0.1:8765`) in a browser during
+training: the page **auto-refreshes itself every second** (plain JS `setInterval` polling `/metrics` and
+`/known-repo-results`, no browser extension or manual reload needed) and keeps working even if a request
+occasionally fails — just leave the tab open. It shows live-updating charts of training loss and
+validation macro-F1, plus a "Known-repo validation" section (see below) once you run `evaluate-repo`.
+
+The server only listens on `127.0.0.1` (localhost), so open the browser **on the same machine that's
+running training** — e.g. on the Windows GPU box itself, not remotely from another computer.
 
 To reopen the dashboard for a run that's already in progress (or to re-view a finished run's log)
 without starting a new training job:
@@ -155,12 +214,28 @@ paths.
 ## Performance
 
 The embedding step (`aicontrib embed`) is the only slow part -- it's a forward pass through a 110M-param
-transformer for every row, and the MLP training itself is fast regardless of hardware. Measured throughput
-on an 8-core CPU with realistic (non-trivial-length) code samples was **~1.6 rows/sec**, so the default
-caps (6,300 rows total across splits) take roughly an hour. Runtime scales roughly linearly with
-`per_class_cap` in `configs/default.yaml` -- raise it for a stronger model once the pipeline works
-end-to-end, at a proportional time cost. A CUDA GPU (auto-detected) speeds this step up substantially;
-exact speedup depends on the card.
+transformer for every row, and the MLP training itself is fast regardless of hardware once embeddings are
+cached. `per_class_cap` in `configs/default.yaml` defaults to `null` (no cap) on the assumption you're
+running this on a GPU: full AICD-Bench T3 + CodeMirage is on the order of 2M+ rows total across splits.
+
+- **CPU-only**: measured throughput on an 8-core CPU with realistic (non-trivial-length) code samples was
+  **~1.6 rows/sec** -- the full dataset would take multiple *days*. Set explicit numbers in
+  `per_class_cap` instead, e.g. `{train: 8000, validation: 1500, test: 1500}` finishes in a few hours.
+- **GPU**: throughput depends heavily on the card, but a full run is still likely to take a while at this
+  scale -- it's safe to just start it and check back later via the [live dashboard](#live-training-dashboard).
+
+Either way, runtime scales linearly with row count -- if a full run is taking longer than expected, lower
+`per_class_cap` rather than waiting it out, then raise it again once the pipeline's been validated
+end-to-end on your hardware.
+
+**Interrupting and resuming.** `aicontrib embed` is safe to stop (Ctrl-C, closing the terminal, a reboot)
+and restart at any point -- it checkpoints to `data/embeddings/{split}.partial.npz` every
+`embedding.checkpoint_every_batches` batches (default 10) and picks back up from there instead of
+recomputing the split from scratch. The checkpoint is validated against the current `data/processed/*.jsonl`
+content before being trusted, so re-running `aicontrib prepare` with different settings correctly discards
+a stale checkpoint rather than silently mixing old and new data. `aicontrib prepare` and `aicontrib train`
+are fast enough end-to-end that they simply restart if interrupted -- only the embedding step's
+per-split runtime (up to hours) makes checkpointing worthwhile.
 
 ## Known limitations
 

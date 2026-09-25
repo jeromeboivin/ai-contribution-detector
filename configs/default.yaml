@@ -29,15 +29,17 @@ dataset:
       # No validation split published upstream -- only feeds train/test.
       hf_splits: {train: train, test: test}
 
-  # Per-class row caps, applied per split, summed across all enabled sources. Keeps the
-  # one-time embedding pass CPU-tractable: measured throughput on an 8-core CPU with real
-  # (non-trivial-length) code samples was ~1.6 rows/sec. Raised from the 1-hour pipeline-
-  # validation defaults (1500/300/300) to a real training scale -- 33,000 rows total,
-  # ~5.7h on CPU (no GPU detected on this machine). See README "Performance".
+  # Per-class row caps, applied per split, summed across all enabled sources. `null` means
+  # no cap -- pull every available row from every enabled source. This is the default: a
+  # real model should train on the full data, not a capped subset. Full AICD-Bench T3 alone
+  # is ~2.1M rows; at the ~1.6 rows/sec observed on an 8-core CPU (see README "Performance"),
+  # that's multiple days -- this default assumes a CUDA GPU (auto-detected, see
+  # aicontrib/device.py). On CPU-only hardware, set explicit numbers here instead, e.g.
+  # {train: 8000, validation: 1500, test: 1500} finishes in a few hours.
   per_class_cap:
-    train: 8000
-    validation: 1500
-    test: 1500
+    train: null
+    validation: null
+    test: null
 
 classes:
   names: ["human", "co_authored", "ai"]
