@@ -30,15 +30,19 @@ def _sample_commit_shas(repo_path: str, n_samples: int) -> list[str]:
 
 
 def evaluate_known_repo(
-    repo_path: str, expected_class: str, n_samples: int = 50, config_path: str | None = None
+    repo_path: str, expected_class: str, n_samples: int = 50, config_path: str | None = None,
+    added_files_only: bool = False,
 ) -> dict:
+    """added_files_only: score only files a commit creates (whole files, like the training
+    snippets) and skip commits that create none -- compare with a normal run to see how much
+    of the error comes from classifying stitched-together diff hunks."""
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
     if expected_class not in class_names:
         raise ValueError(f"expected_class must be one of {class_names}, got {expected_class!r}")
 
     shas = _sample_commit_shas(repo_path, n_samples)
-    classifier = CommitClassifier(config_path)
+    classifier = CommitClassifier(config_path, added_files_only=added_files_only)
 
     per_commit = []
     skipped = 0
@@ -64,15 +68,24 @@ def evaluate_known_repo(
     n_evaluated = len(per_commit)
     n_correct = sum(1 for c in per_commit if c["predicted"] == expected_class)
     mean_expected_prob = sum(c["expected_class_probability"] for c in per_commit) / n_evaluated if n_evaluated else 0.0
+    # All classes, not just the expected one: shows where the missing probability goes
+    # (the opposite class, or co_authored), which call for different fixes.
+    mean_probabilities = {
+        cls: sum(c["aggregate"][cls] for c in per_commit) / n_evaluated if n_evaluated else 0.0 for cls in class_names
+    }
+    predicted_counts = {cls: sum(1 for c in per_commit if c["predicted"] == cls) for cls in class_names}
 
     return {
         "repo": repo_path,
         "expected_class": expected_class,
+        "added_files_only": added_files_only,
         "n_commits_sampled": len(shas),
         "n_commits_evaluated": n_evaluated,
         "n_commits_skipped_no_supported_files": skipped,
         "accuracy": n_correct / n_evaluated if n_evaluated else 0.0,
         "mean_expected_class_probability": mean_expected_prob,
+        "mean_probabilities": mean_probabilities,
+        "predicted_counts": predicted_counts,
         "mean_expected_class_probability_by_language": {
             lang: sum(probs) / len(probs) for lang, probs in per_language_probs.items()
         },

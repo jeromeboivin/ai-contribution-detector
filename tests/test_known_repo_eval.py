@@ -64,3 +64,22 @@ def test_evaluate_known_repo_structure(tmp_path, config_path):
     assert 0.0 <= result["accuracy"] <= 1.0
     assert "python" in result["mean_expected_class_probability_by_language"]
     assert len(result["per_commit"]) == 3
+    assert set(result["mean_probabilities"]) == {"human", "co_authored", "ai"}
+    assert sum(result["mean_probabilities"].values()) == pytest.approx(1.0)
+    assert result["mean_probabilities"]["ai"] == pytest.approx(result["mean_expected_class_probability"])
+    assert sum(result["predicted_counts"].values()) == 3
+
+
+def test_evaluate_known_repo_added_files_only(tmp_path, config_path):
+    from aicontrib.diff.known_repo_eval import evaluate_known_repo
+
+    repo_path = tmp_path / "repo"
+    _make_repo(repo_path)
+
+    result = evaluate_known_repo(str(repo_path), "ai", n_samples=10, config_path=config_path, added_files_only=True)
+
+    # Only the first commit creates f.py; the other two modify it.
+    assert result["added_files_only"] is True
+    assert result["n_commits_evaluated"] == 1
+    assert result["n_commits_skipped_no_supported_files"] == 2
+    assert sum(result["predicted_counts"].values()) == 1

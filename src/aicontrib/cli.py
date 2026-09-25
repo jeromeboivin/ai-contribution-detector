@@ -7,15 +7,18 @@ import sys
 import traceback
 
 
-def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: str | None, samples: int, as_json: bool) -> None:
+def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: str | None, samples: int, as_json: bool,
+                        added_files_only: bool = False) -> None:
     import time
     from pathlib import Path
 
     from aicontrib.diff.known_repo_eval import evaluate_known_repo
     from aicontrib.monitor import append_known_repo_result
 
-    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples)
+    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, added_files_only=added_files_only)
     name = name or Path(repo_path).resolve().name
+    if added_files_only:
+        name += " (added files only)"  # its own dashboard card and trend: a different measurement
 
     append_known_repo_result(
         Path(cfg["paths"]["models_dir"]),
@@ -26,6 +29,9 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         accuracy=result["accuracy"],
         mean_expected_class_probability=result["mean_expected_class_probability"],
         mean_expected_class_probability_by_language=result["mean_expected_class_probability_by_language"],
+        mean_probabilities=result["mean_probabilities"],
+        predicted_counts=result["predicted_counts"],
+        added_files_only=added_files_only,
         n_commits_evaluated=result["n_commits_evaluated"],
         n_commits_skipped_no_supported_files=result["n_commits_skipped_no_supported_files"],
     )
@@ -38,12 +44,17 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
     else:
         print(f"Repo: {result['repo']}")
         print(f"Expected class: {result['expected_class']}")
+        if added_files_only:
+            print("Scope: only files each commit adds (modified files ignored)")
+        skip_reason = "no newly added supported-language files" if added_files_only else "no supported-language changes"
         print(
             f"Commits: {result['n_commits_evaluated']} evaluated, "
-            f"{result['n_commits_skipped_no_supported_files']} skipped (no supported-language changes), "
+            f"{result['n_commits_skipped_no_supported_files']} skipped ({skip_reason}), "
             f"{result['n_commits_sampled']} sampled total"
         )
         print(f"Accuracy (argmax == expected): {result['accuracy']:.1%}")
+        print("Predicted class counts: " + ", ".join(f"{c} {n}" for c, n in result["predicted_counts"].items()))
+        print("Mean probability per class: " + ", ".join(f"{c} {p:.3f}" for c, p in result["mean_probabilities"].items()))
         print(f"Mean P({result['expected_class']}): {result['mean_expected_class_probability']:.3f}")
         print(f"Mean P({result['expected_class']}) by language:")
         for lang, prob in sorted(result["mean_expected_class_probability_by_language"].items()):
@@ -88,6 +99,10 @@ def main(argv: list[str] | None = None) -> None:
     eval_repo_parser.add_argument("--json", action="store_true", help="Print full per-commit results as JSON")
     eval_repo_parser.add_argument(
         "--name", help="Label for the dashboard (default: the repo directory's basename)"
+    )
+    eval_repo_parser.add_argument(
+        "--added-files-only", action="store_true",
+        help="Score only files each commit adds (whole files, like the training data); skip commits that add none",
     )
 
     report_parser = subparsers.add_parser(
@@ -174,7 +189,7 @@ def main(argv: list[str] | None = None) -> None:
 
         for repo_path, expected_class, name in targets:
             try:
-                _evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json)
+                _evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json, args.added_files_only)
             except Exception as exc:  # noqa: BLE001 - one bad entry (e.g. missing local path) shouldn't abort the rest
                 print(f"[{name or repo_path}] skipped: {exc}")
                 print()

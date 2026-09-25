@@ -508,6 +508,17 @@ python -m aicontrib evaluate-repo /path/to/some/repo human --samples 50
 python -m aicontrib evaluate-repo --all
 ```
 
+Besides accuracy, the output shows how many commits went to each class and the mean probability of every
+class, not just the expected one. That tells you where the missing probability goes: to the opposite class,
+or to `co_authored`.
+
+**`--added-files-only`** scores only the files each commit *creates*. A new file is whole, like the
+training snippets; an edit to an existing file is classified as its hunks stitched together (see Known
+limitations). If accuracy is much higher with this flag, the diff-to-snippet mismatch is a big part of
+the error. Commits that add no supported file are skipped, and most commits only modify files, so
+raise `--samples` (e.g. `--samples 300`) to get enough evaluated commits. These runs get their own
+dashboard card, "<name> (added files only)", so they don't mix into the normal trend.
+
 **Configuring known repos** (`configs/local.yaml`, gitignored — never enters git history): copy
 `configs/local.example.yaml` to `configs/local.yaml` and list your repos there. A repo's local path is
 machine-specific by nature, and for a *private* repo it also shouldn't be visible in this project's public

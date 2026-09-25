@@ -185,6 +185,13 @@ function renderRepoResults(rows) {
       .join("");
 
     const when = new Date(latest.timestamp * 1000).toLocaleString();
+    // Absent on results logged before these fields existed.
+    const classLine = latest.mean_probabilities
+      ? `<div class="subline">mean P: ${Object.entries(latest.mean_probabilities)
+          .map(([cls, p]) => `${cls} ${p.toFixed(3)}`).join(" &middot; ")}
+         <br>predicted: ${Object.entries(latest.predicted_counts || {})
+          .map(([cls, n]) => `${cls} ${n}`).join(" &middot; ")}</div>`
+      : "";
 
     card.innerHTML = `
       <div class="headline">
@@ -196,6 +203,7 @@ function renderRepoResults(rows) {
         mean P(${latest.expected_class}) = ${latest.mean_expected_class_probability.toFixed(3)}
         &middot; ${latest.n_commits_evaluated} commits &middot; ${when}
       </div>
+      ${classLine}
       ${runs.length > 1 ? "<canvas></canvas>" : ""}
       <div class="langs">${langsHtml}</div>
     `;
