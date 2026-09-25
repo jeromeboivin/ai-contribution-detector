@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+data/
+models/
+.cache/
+
+# Machine-local settings (e.g. paths to private known-authorship repos) -- never commit this.
+configs/local.yaml
+.claude/

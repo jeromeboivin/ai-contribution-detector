@@ -1,0 +1,15 @@
+# Copy this file to configs/local.yaml (already in .gitignore) and fill in real local paths.
+# Entries here are appended to `known_repos` from configs/default.yaml -- see README
+# "Real-world validation against known-authorship repos".
+#
+# `path` must be an absolute path to a local git clone. `expected_class` is one of
+# human / co_authored / ai -- whatever you know for certain about that repo's authorship.
+
+known_repos:
+  - name: tslint
+    path: "/absolute/path/to/tslint"  # git clone https://github.com/palantir/tslint.git
+    expected_class: human
+
+  - name: my-private-ai-repo
+    path: "/absolute/path/to/your/private/repo"
+    expected_class: ai

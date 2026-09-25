@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>aicontrib training dashboard</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #666666;
+    --grid: #e0e0e0;
+    --loss-color: #d9534f;
+    --f1-color: #2f7ed8;
+    --card-bg: #f7f7f8;
+    --border: #dddddd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a;
+      --fg: #e8e8e8;
+      --muted: #9a9a9a;
+      --grid: #33343a;
+      --card-bg: #1f2023;
+      --border: #333438;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  #status { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 20px; max-width: 900px; }
+  @media (min-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .value { font-size: 22px; font-weight: 600; margin-left: 8px; }
+  section.block { margin-top: 32px; }
+  section.block > h2 { font-size: 14px; font-weight: 600; margin: 0 0 14px; }
+  .repo-grid { display: grid; grid-template-columns: 1fr; gap: 20px; max-width: 900px; }
+  @media (min-width: 860px) { .repo-grid { grid-template-columns: 1fr 1fr; } }
+  .repo-card canvas { height: 120px; }
+  .repo-card .headline { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .repo-card .headline .name { font-size: 15px; font-weight: 600; }
+  .repo-card .headline .expected { font-size: 12px; color: var(--muted); }
+  .repo-card .accuracy { font-size: 28px; font-weight: 700; }
+  .repo-card .subline { font-size: 12px; color: var(--muted); margin: 2px 0 10px; }
+  .repo-card .langs { font-size: 12px; margin-top: 8px; }
+  .repo-card .langs div { display: flex; justify-content: space-between; padding: 2px 0; }
+  .empty-hint { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>Training dashboard</h1>
+  <div id="status">waiting for metrics&hellip;</div>
+  <div class="grid">
+    <div class="card">
+      <h2>Train loss <span class="value" id="loss-value" style="color: var(--loss-color)"></span></h2>
+      <canvas id="loss-chart"></canvas>
+    </div>
+    <div class="card">
+      <h2>Validation macro-F1 <span class="value" id="f1-value" style="color: var(--f1-color)"></span></h2>
+      <canvas id="f1-chart"></canvas>
+    </div>
+  </div>
+
+  <section class="block">
+    <h2>Known-repo validation</h2>
+    <div id="repo-results" class="repo-grid">
+      <p class="empty-hint">No <code>evaluate-repo</code> runs logged yet.</p>
+    </div>
+  </section>
+
+<script>
+function drawLineChart(canvas, points, color, xLabel = "epoch") {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const gridColor = getComputedStyle(document.documentElement).getPropertyValue("--grid").trim();
+  const mutedColor = getComputedStyle(document.documentElement).getPropertyValue("--muted").trim();
+  const padL = 40, padB = 22, padT = 8, padR = 8;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+
+  if (points.length === 0) return;
+
+  const ys = points.map(p => p[1]);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  const pad = (yMax - yMin) * 0.1;
+  yMin -= pad; yMax += pad;
+
+  const xMin = points[0][0], xMax = points[points.length - 1][0];
+  const xSpan = Math.max(xMax - xMin, 1);
+
+  const toX = x => padL + ((x - xMin) / xSpan) * plotW;
+  const toY = y => padT + plotH - ((y - yMin) / (yMax - yMin)) * plotH;
+
+  // gridlines + y labels
+  ctx.strokeStyle = gridColor;
+  ctx.fillStyle = mutedColor;
+  ctx.font = "11px sans-serif";
+  ctx.lineWidth = 1;
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const y = yMin + (i / ticks) * (yMax - yMin);
+    const py = toY(y);
+    ctx.beginPath();
+    ctx.moveTo(padL, py);
+    ctx.lineTo(w - padR, py);
+    ctx.stroke();
+    ctx.fillText(y.toFixed(3), 2, py + 4);
+  }
+
+  // x axis label (range)
+  ctx.fillText(xLabel + " " + xMin, padL, h - 4);
+  ctx.fillText(xLabel + " " + xMax, w - padR - 50, h - 4);
+
+  // line
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach(([x, y], i) => {
+    const px = toX(x), py = toY(y);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  // dots
+  ctx.fillStyle = color;
+  points.forEach(([x, y]) => {
+    ctx.beginPath();
+    ctx.arc(toX(x), toY(y), 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function colorForAccuracy(acc) {
+  if (acc >= 0.7) return "#2e9e4f";
+  if (acc >= 0.4) return "#d9a52f";
+  return "#d9534f";
+}
+
+function renderRepoResults(rows) {
+  const container = document.getElementById("repo-results");
+  if (rows.length === 0) {
+    container.innerHTML = '<p class="empty-hint">No <code>evaluate-repo</code> runs logged yet.</p>';
+    return;
+  }
+
+  const byName = {};
+  rows.forEach(r => { (byName[r.name] = byName[r.name] || []).push(r); });
+
+  container.innerHTML = "";
+  Object.keys(byName).sort().forEach(name => {
+    const runs = byName[name].sort((a, b) => a.timestamp - b.timestamp);
+    const latest = runs[runs.length - 1];
+    const color = colorForAccuracy(latest.accuracy);
+
+    const card = document.createElement("div");
+    card.className = "card repo-card";
+
+    const langsHtml = Object.entries(latest.mean_expected_class_probability_by_language || {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([lang, p]) => `<div><span>${lang}</span><span>${p.toFixed(3)}</span></div>`)
+      .join("");
+
+    const when = new Date(latest.timestamp * 1000).toLocaleString();
+
+    card.innerHTML = `
+      <div class="headline">
+        <span class="name">${name}</span>
+        <span class="expected">expected: ${latest.expected_class}</span>
+      </div>
+      <div class="accuracy" style="color: ${color}">${(latest.accuracy * 100).toFixed(0)}%</div>
+      <div class="subline">
+        mean P(${latest.expected_class}) = ${latest.mean_expected_class_probability.toFixed(3)}
+        &middot; ${latest.n_commits_evaluated} commits &middot; ${when}
+      </div>
+      ${runs.length > 1 ? "<canvas></canvas>" : ""}
+      <div class="langs">${langsHtml}</div>
+    `;
+    container.appendChild(card);
+
+    if (runs.length > 1) {
+      const points = runs.map((r, i) => [i + 1, r.accuracy]);
+      drawLineChart(card.querySelector("canvas"), points, color, "run");
+    }
+  });
+}
+
+async function refresh() {
+  let rows, repoRows;
+  try {
+    [rows, repoRows] = await Promise.all([
+      fetch("/metrics").then(r => r.json()),
+      fetch("/known-repo-results").then(r => r.json()),
+    ]);
+  } catch (e) {
+    document.getElementById("status").textContent = "cannot reach server";
+    return;
+  }
+  renderRepoResults(repoRows);
+
+  const status = document.getElementById("status");
+  if (rows.length === 0) {
+    status.textContent = "waiting for metrics…";
+    return;
+  }
+  const last = rows[rows.length - 1];
+  status.textContent = `epoch ${last.epoch} — ${rows.length} epoch(s) logged — refreshing every 1s`;
+
+  const lossPoints = rows.filter(r => r.train_loss !== undefined).map(r => [r.epoch, r.train_loss]);
+  const f1Points = rows.filter(r => r.val_macro_f1 !== undefined).map(r => [r.epoch, r.val_macro_f1]);
+
+  document.getElementById("loss-value").textContent = lossPoints.length ? lossPoints[lossPoints.length - 1][1].toFixed(4) : "";
+  document.getElementById("f1-value").textContent = f1Points.length ? f1Points[f1Points.length - 1][1].toFixed(4) : "";
+
+  drawLineChart(document.getElementById("loss-chart"), lossPoints, getComputedStyle(document.documentElement).getPropertyValue("--loss-color").trim());
+  drawLineChart(document.getElementById("f1-chart"), f1Points, getComputedStyle(document.documentElement).getPropertyValue("--f1-color").trim());
+}
+
+refresh();
+setInterval(refresh, 1000);
+window.addEventListener("resize", refresh);
+</script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+# Central config for the pipeline. Every stage (prepare/embed/train/evaluate/classify-commit)
+# reads this file so paths and hyperparameters stay in one place.
+
+dataset:
+  # Sources are pulled in order until every class hits per_class_cap for that split
+  # (see prepare.py). AICD-Bench is fine-grained (human/co_authored/ai) so it's listed
+  # first; CodeMirage is binary-only and only tops up the human/ai buckets.
+  #
+  # DroidCollection is deliberately NOT included as a separate source: AICD-Bench is
+  # built directly on top of Droid (extended + MinHash-deduplicated against it -- see
+  # the AICD-Bench paper, arXiv:2602.02079, Sec. 3), so its content is already folded
+  # into AICD-Bench. Adding Droid again would only reintroduce near-duplicate rows.
+  sources:
+    - name: aicd_bench
+      enabled: true
+      adapter: aicd_bench
+      hf_repo: "AICD-bench/AICD-Bench"
+      hf_config: "T3"          # fine-grained human/machine/hybrid/adversarial task
+      # No official license declared on the HF repo.
+      hf_splits: {train: train, validation: validation, test: test}
+    - name: codemirage
+      enabled: true
+      adapter: codemirage
+      hf_repo: "HanxiGuo/CodeMirage"
+      hf_config: null
+      # CC-BY-NC-ND-4.0: non-commercial use only, no redistributing a derivative model.
+      # Set enabled: false above to drop it if this stops being a personal/research project.
+      license: "cc-by-nc-nd-4.0"
+      # No validation split published upstream -- only feeds train/test.
+      hf_splits: {train: train, test: test}
+
+  # Per-class row caps, applied per split, summed across all enabled sources. Keeps the
+  # one-time embedding pass CPU-tractable: measured throughput on an 8-core CPU with real
+  # (non-trivial-length) code samples was ~1.6 rows/sec. Raised from the 1-hour pipeline-
+  # validation defaults (1500/300/300) to a real training scale -- 33,000 rows total,
+  # ~5.7h on CPU (no GPU detected on this machine). See README "Performance".
+  per_class_cap:
+    train: 8000
+    validation: 1500
+    test: 1500
+
+classes:
+  names: ["human", "co_authored", "ai"]
+
+# Local repos with known ground-truth authorship, used by `aicontrib evaluate-repo --all`
+# (see README "Real-world validation"). Left empty here on purpose: a repo's local path is
+# machine-specific and, for a private repo, shouldn't enter git history at all. Copy
+# configs/local.example.yaml to configs/local.yaml (gitignored) and add your own entries
+# there instead -- they get merged into this list automatically.
+known_repos: []
+
+paths:
+  raw_cache_dir: "data/raw"
+  processed_dir: "data/processed"
+  embeddings_dir: "data/embeddings"
+  models_dir: "models"
+
+embedding:
+  model_name: "Salesforce/codet5p-110m-embedding"
+  max_length: 512
+  batch_size: 32
+  dim: 256
+  # Write a resume checkpoint every N batches (~10 batches ~= 3min risk window at the
+  # ~17-21s/batch observed on this machine). Killing the process mid-split loses at
+  # most this many batches' worth of work instead of the whole split. See embed.py.
+  checkpoint_every_batches: 10
+
+model:
+  hidden_dims: [128, 64]
+  dropout: 0.2
+
+monitor:
+  port: 8765
+
+training:
+  epochs: 30
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  early_stopping_patience: 5
+  seed: 42
+
+commit_classification:
+  supported_extensions:
+    .py: python
+    .js: javascript
+    .jsx: javascript
+    .ts: javascript   # TypeScript routed through the JS-trained path (see README limitations)
+    .tsx: javascript
+    .cpp: cpp
+    .cc: cpp
+    .cxx: cpp
+    .h: cpp
+    .hpp: cpp
+    .cs: csharp
