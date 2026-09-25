@@ -33,3 +33,19 @@ def test_checkpoint_of_another_representation_is_refused(tmp_path):
     with pytest.raises(ValueError, match="trained on 'hidden:6,12'"):
         load_checkpoint(tmp_path / "m.pt", torch.device("cpu"), representation="projected")
     load_checkpoint(tmp_path / "m.pt", torch.device("cpu"), representation="hidden:6,12")
+
+
+def test_old_three_class_checkpoint_is_refused_by_the_binary_config(tmp_path):
+    model = MLPClassifier(4, [3], 3, 0.0)
+    torch.save({"state_dict": model.state_dict(), "input_dim": 4, "hidden_dims": [3], "num_classes": 3,
+                "dropout": 0.0}, tmp_path / "old.pt")
+    with pytest.raises(ValueError, match="trained for classes \\['human', 'co_authored', 'ai'\\]"):
+        load_checkpoint(tmp_path / "old.pt", torch.device("cpu"), class_names=["human", "ai"])
+    load_checkpoint(tmp_path / "old.pt", torch.device("cpu"), class_names=["human", "co_authored", "ai"])
+
+
+def test_checkpoint_with_other_class_names_is_refused(tmp_path):
+    _save(tmp_path / "m.pt", MLPClassifier(4, [3], 2, 0.0), class_names=["human", "ai"])
+    with pytest.raises(ValueError, match="classes.names"):
+        load_checkpoint(tmp_path / "m.pt", torch.device("cpu"), class_names=["ai", "human"])
+    load_checkpoint(tmp_path / "m.pt", torch.device("cpu"), class_names=["human", "ai"])

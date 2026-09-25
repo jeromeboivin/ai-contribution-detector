@@ -58,7 +58,7 @@
 # rate then gets reduced a few times -- smaller, finer steps -- before training gives up.
 
 # ---- Repos with known authorship, for `aicontrib evaluate-repo --all` ----------------
-# `path` is an absolute path to a local git clone; `expected_class` is human / co_authored / ai.
+# `path` is an absolute path to a local git clone; `expected_class` is human or ai.
 # Optional `since` / `until` (dates, e.g. 2021-12-31) limit an entry to part of the history -- useful
 # for a big repo, or one whose authorship changed over time: list it twice, e.g. a `human` entry
 # with `until: 2021-12-31` and an `ai` entry with `since: 2025-01-01`, under different names.

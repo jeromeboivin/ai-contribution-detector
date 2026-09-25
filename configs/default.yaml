@@ -3,8 +3,8 @@
 
 dataset:
   # Sources are pulled in order until every class hits per_class_cap for that split
-  # (see prepare.py). AICD-Bench is fine-grained (human/co_authored/ai) so it's listed
-  # first; CodeMirage is binary-only and only tops up the human/ai buckets.
+  # (see prepare.py). AICD-Bench is fine-grained (human/co_authored/ai, see classes.remap) so it's
+  # listed first; CodeMirage is binary-only and only tops up the human/ai buckets.
   #
   # DroidCollection is deliberately NOT included as a separate source: AICD-Bench is
   # built directly on top of Droid (extended + MinHash-deduplicated against it -- see
@@ -54,7 +54,13 @@ dataset:
   languages: {}
 
 classes:
-  names: ["human", "co_authored", "ai"]
+  # Binary: is this code AI-generated or not? AICD-Bench's human/AI "hybrid" code (co_authored) counts
+  # as human -- a person wrote part of it. co_authored as a class of its own was the weakest one (F1 ~0.55),
+  # and whether a single file is "co-authored" is hard even to define. For the former 3-class model:
+  #   names: ["human", "co_authored", "ai"]   and   remap: {}
+  # Changing these means re-running prepare, embed and train.
+  names: ["human", "ai"]
+  remap: {co_authored: human}
 
 # Local repos with known ground-truth authorship, used by `aicontrib evaluate-repo --all`
 # (see README "Real-world validation"). Left empty here on purpose: a repo's local path is

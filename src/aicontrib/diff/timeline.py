@@ -1,7 +1,7 @@
 """Full-history authorship timeline for a local repo, rendered as a static HTML page.
 
 Every (non-merge) commit is classified with CommitClassifier and the monthly share
-of human / co-authored / AI commits is written into a self-contained HTML file
+of commits per class (human / AI) is written into a self-contained HTML file
 (no external scripts, opens offline). Per-commit results are cached as they're
 computed, so an interrupted run resumes where it stopped and a re-run after new
 commits only classifies the new ones. The cache is keyed on the model file's

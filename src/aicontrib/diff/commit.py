@@ -73,7 +73,8 @@ class CommitClassifier:
         self.device = get_device()
         self.embedder = CodeEmbedder(self.cfg)
         self.model = load_checkpoint(Path(self.cfg["paths"]["models_dir"]) / "mlp_classifier.pt", self.device,
-                                     representation=self.embedder.representation_id())
+                                     representation=self.embedder.representation_id(),
+                                     class_names=self.cfg["classes"]["names"])
         self.class_names = self.cfg["classes"]["names"]
         self.extensions = self.cfg["commit_classification"]["supported_extensions"]
         self.max_files = self.cfg["commit_classification"].get("max_files_per_commit")

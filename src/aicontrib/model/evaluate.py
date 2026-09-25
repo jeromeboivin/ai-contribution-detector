@@ -5,17 +5,27 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score, recall_score
+from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix, f1_score, recall_score,
+                             roc_auc_score)
 
 from aicontrib.config import load_config
 from aicontrib.device import get_device
 from aicontrib.model.classifier import MLPClassifier
 
 
-def load_checkpoint(checkpoint_path: Path, device: torch.device, representation: str | None = None) -> MLPClassifier:
+def load_checkpoint(checkpoint_path: Path, device: torch.device, representation: str | None = None,
+                    class_names: list[str] | None = None) -> MLPClassifier:
     """representation: the embedding representation the caller will feed (CodeEmbedder.representation_id());
-    a model trained on another one is refused instead of producing garbage or a shape error."""
+    class_names: the classes the caller will read the outputs as (classes.names). A model trained with
+    others is refused instead of producing garbage, a shape error, or probabilities under the wrong names."""
     ckpt = torch.load(checkpoint_path, map_location=device)
+    if class_names is not None:
+        # Checkpoints of older versions don't record names: the 3-class model.
+        trained_classes = ckpt.get("class_names") or (["human", "co_authored", "ai"] if ckpt["num_classes"] == 3 else None)
+        if trained_classes != list(class_names):
+            raise ValueError(f"The model at {checkpoint_path} was trained for classes {trained_classes}, but "
+                             f"classes.names in the config is {list(class_names)}. Re-run `aicontrib prepare`, "
+                             "`embed` and `train`, or change the config back.")
     trained_on = ckpt.get("representation", "projected")  # checkpoints of older versions: projected
     if representation is not None and representation != trained_on:
         raise ValueError(f"The model at {checkpoint_path} was trained on '{trained_on}' embeddings but is being given "
@@ -73,18 +83,25 @@ def evaluate(config_path: str | None = None) -> None:
 
     data = np.load(Path(cfg["paths"]["embeddings_dir"]) / "test.npz")
     embedded_as = str(data["representation"]) if "representation" in data else "projected"
-    model = load_checkpoint(checkpoint_path, device, representation=embedded_as)
+    names = cfg["classes"]["names"]
+    model = load_checkpoint(checkpoint_path, device, representation=embedded_as, class_names=names)
     x = torch.tensor(data["embeddings"], dtype=torch.float32).to(device)
     y_true = data["labels"]
+    if int(y_true.max()) >= len(names):
+        raise ValueError(f"The test embeddings have labels for more classes than classes.names {names} -- they "
+                         "were prepared for other classes. Re-run `aicontrib prepare` and `aicontrib embed`.")
 
     logits = model(x)
     y_pred = logits.argmax(dim=-1).cpu().numpy()
 
-    names = cfg["classes"]["names"]
     print(classification_report(y_true, y_pred, target_names=names, digits=3))
     print("confusion matrix (rows=true, cols=pred):")
     print(names)
     print(confusion_matrix(y_true, y_pred))
+    if len(names) == 2:
+        p_second = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
+        print(f"\nAUC, P({names[1]}) ranking {names[1]} rows above {names[0]} rows "
+              f"(0.5 = no signal, 1.0 = perfect): {roc_auc_score(y_true, p_second):.3f}")
 
     languages = _split_languages(cfg, "test")
     if len(languages) != len(y_true):

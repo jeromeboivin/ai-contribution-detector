@@ -99,3 +99,17 @@ def test_exact_duplicate_code_is_deduped_across_sources(tmp_path, monkeypatch):
 
     assert len(rows) == 2
     assert {r["code"] for r in rows} == {"same code", "unique"}
+
+
+def test_remap_merges_co_authored_into_human(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        prepare,
+        "iter_source",
+        _fake_sources({"a": [("h1", "human"), ("c1", "co_authored"), ("a1", "ai"), ("c2", "co_authored")]}),
+    )
+    cfg = _base_cfg(tmp_path, per_class_cap=2)
+    cfg["classes"] = {"names": ["human", "ai"], "remap": {"co_authored": "human"}}
+
+    rows = _read_jsonl(prepare.prepare_split(cfg, "train"))
+
+    assert {r["code"]: r["label"] for r in rows} == {"h1": 0, "c1": 0, "a1": 1}  # c2: human cap of 2 reached

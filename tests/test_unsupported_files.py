@@ -26,7 +26,7 @@ def _classifier_with_stub_model() -> CommitClassifier:
     clf.extensions = cfg["commit_classification"]["supported_extensions"]
     clf.max_files = cfg["commit_classification"]["max_files_per_commit"]
     clf.added_files_only = False
-    clf._probabilities = lambda texts: np.tile([0.2, 0.3, 0.5], (len(texts), 1))
+    clf._probabilities = lambda texts: np.tile([0.3, 0.7], (len(texts), 1))
     return clf
 
 
@@ -91,7 +91,7 @@ def test_crlf_and_lone_carriage_returns_parse_and_are_normalized(tmp_path):
 
     clf = _classifier_with_stub_model()
     seen = []
-    clf._probabilities = lambda texts: seen.extend(texts) or np.tile([0.2, 0.3, 0.5], (len(texts), 1))
+    clf._probabilities = lambda texts: seen.extend(texts) or np.tile([0.3, 0.7], (len(texts), 1))
 
     result = clf.classify(str(repo), sha)
     assert [f["path"] for f in result["files"]] == ["win.py"]

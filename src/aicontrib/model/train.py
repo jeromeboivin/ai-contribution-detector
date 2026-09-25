@@ -53,6 +53,11 @@ def train(config_path: str | None = None) -> Path:
 
     input_dim = train_ds.tensors[0].shape[1]
     num_classes = len(cfg["classes"]["names"])
+    for split, ds in (("train", train_ds), ("validation", val_ds)):
+        if int(ds.tensors[1].max()) >= num_classes:
+            raise ValueError(f"The {split} embeddings have labels for more classes than classes.names "
+                             f"{cfg['classes']['names']} -- they were prepared for other classes. "
+                             "Re-run `aicontrib prepare` and `aicontrib embed`.")
     model = MLPClassifier(
         input_dim=input_dim,
         hidden_dims=cfg["model"]["hidden_dims"],
@@ -118,6 +123,7 @@ def train(config_path: str | None = None) -> Path:
                     "num_classes": num_classes,
                     "dropout": cfg["model"]["dropout"],
                     "representation": representation,
+                    "class_names": cfg["classes"]["names"],
                 },
                 checkpoint_path,
             )

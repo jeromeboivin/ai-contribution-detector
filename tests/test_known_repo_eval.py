@@ -24,11 +24,13 @@ def _make_repo(repo_path: Path) -> None:
         _run("git", "commit", "-q", "-m", f"commit {i}", cwd=repo_path)
 
 
-def _make_checkpoint(models_dir: Path, dim: int) -> None:
+def _make_checkpoint(models_dir: Path, dim: int, class_names: list[str]) -> None:
     models_dir.mkdir(parents=True, exist_ok=True)
-    model = MLPClassifier(input_dim=dim, hidden_dims=[8], num_classes=3, dropout=0.0)
+    n = len(class_names)
+    model = MLPClassifier(input_dim=dim, hidden_dims=[8], num_classes=n, dropout=0.0)
     torch.save(
-        {"state_dict": model.state_dict(), "input_dim": dim, "hidden_dims": [8], "num_classes": 3, "dropout": 0.0},
+        {"state_dict": model.state_dict(), "input_dim": dim, "hidden_dims": [8], "num_classes": n, "dropout": 0.0,
+         "class_names": class_names},
         models_dir / "mlp_classifier.pt",
     )
 
@@ -44,7 +46,7 @@ def config_path(tmp_path):
         embedder = CodeEmbedder(cfg)  # skip if the real encoder can't be downloaded, same as other tests
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"encoder unavailable, skipping known-repo eval test: {exc}")
-    _make_checkpoint(tmp_path / "models", embedder.dim)
+    _make_checkpoint(tmp_path / "models", embedder.dim, cfg["classes"]["names"])
 
     path = tmp_path / "test_config.yaml"
     path.write_text(yaml.safe_dump(cfg))
@@ -64,7 +66,7 @@ def test_evaluate_known_repo_structure(tmp_path, config_path):
     assert 0.0 <= result["accuracy"] <= 1.0
     assert "python" in result["mean_expected_class_probability_by_language"]
     assert len(result["per_commit"]) == 3
-    assert set(result["mean_probabilities"]) == {"human", "co_authored", "ai"}
+    assert set(result["mean_probabilities"]) == {"human", "ai"}
     assert sum(result["mean_probabilities"].values()) == pytest.approx(1.0)
     assert result["mean_probabilities"]["ai"] == pytest.approx(result["mean_expected_class_probability"])
     assert sum(result["predicted_counts"].values()) == 3

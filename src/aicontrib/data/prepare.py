@@ -27,7 +27,9 @@ _SPLITS = ("train", "validation", "test")
 def prepare_split(cfg: dict, out_name: str) -> Path:
     cap = cfg["dataset"]["per_class_cap"][out_name]  # None means unbounded -- take everything available
     class_names = cfg["classes"]["names"]
+    remap = cfg["classes"].get("remap") or {}  # e.g. co_authored -> human for the binary model
     num_classes = len(class_names)
+    remapped: Counter = Counter()
 
     def cap_reached(cls: str) -> bool:
         return cap is not None and counts[cls] >= cap
@@ -53,6 +55,7 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
                 if not code or not code.strip():  # upstream data has a few rows with no code (e.g. CodeMirage)
                     empty_rows += 1
                     continue
+                source_cls, cls = cls, remap.get(cls, cls)
                 if cls not in class_names:
                     continue
                 if allowed is not None:
@@ -72,6 +75,8 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
                     continue
                 seen_hashes.add(digest)
                 counts[cls] += 1
+                if cls != source_cls:
+                    remapped[f"{source_cls} -> {cls}"] += 1
                 languages[lang or "unknown"] += 1
                 f.write(json.dumps({"code": code, "label": class_names.index(cls), "language": lang}) + "\n")
                 pbar.update(1)
@@ -83,6 +88,8 @@ def prepare_split(cfg: dict, out_name: str) -> Path:
           f"skipped {empty_rows} rows with no code"
           + (f", {filtered_out} rows in excluded languages" if allowed is not None else ""))
     print(f"[{out_name}] per-language counts: {dict(languages.most_common())}")
+    if remapped:
+        print(f"[{out_name}] of which relabelled (classes.remap): {dict(remapped)}")
     return out_path
 
 

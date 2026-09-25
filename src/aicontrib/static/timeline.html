@@ -317,7 +317,7 @@
     const GAP = 2;
 
     const root = svg("svg", { id: "chart", width, height, role: "img",
-      "aria-label": "Monthly share of human, co-authored and AI commits, with commit volume below" });
+      "aria-label": `Monthly share of ${classes.map(label).join(", ")} commits, with commit volume below` });
     chartNode = root;
     const grid = svg("g");
     const marks = svg("g");

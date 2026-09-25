@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     eval_repo_parser.add_argument("repo_path", nargs="?", help="Path to a local git repository")
     eval_repo_parser.add_argument(
-        "expected_class", nargs="?", choices=["human", "co_authored", "ai"], help="Known ground-truth class for this repo"
+        "expected_class", nargs="?", help="Known ground-truth class for this repo: human or ai (see classes.names)"
     )
     eval_repo_parser.add_argument(
         "--all", action="store_true", help="Run every repo listed under known_repos in configs/local.yaml instead"

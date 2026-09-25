@@ -45,6 +45,8 @@ def evaluate_known_repo(
     commits in that date range (anything `git log --since` accepts, e.g. 2021-12-31)."""
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
+    # A repo labelled with a class the model merges into another (co_authored -> human) is scored as that one.
+    expected_class = (cfg["classes"].get("remap") or {}).get(expected_class, expected_class)
     if expected_class not in class_names:
         raise ValueError(f"expected_class must be one of {class_names}, got {expected_class!r}")
 
@@ -79,7 +81,7 @@ def evaluate_known_repo(
     n_correct = sum(1 for c in per_commit if c["predicted"] == expected_class)
     mean_expected_prob = sum(c["expected_class_probability"] for c in per_commit) / n_evaluated if n_evaluated else 0.0
     # All classes, not just the expected one: shows where the missing probability goes
-    # (the opposite class, or co_authored), which call for different fixes.
+    # (e.g. the opposite class, or co_authored in a 3-class model), which call for different fixes.
     mean_probabilities = {
         cls: sum(c["aggregate"][cls] for c in per_commit) / n_evaluated if n_evaluated else 0.0 for cls in class_names
     }

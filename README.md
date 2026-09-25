@@ -1,7 +1,8 @@
 # ai-contribution-detector
 
-Tells you whether the code in a git repository was **written by hand**, **co-authored** with AI, or
-**fully AI-generated** — commit by commit, and as a month-by-month timeline over the repository's history.
+Tells you whether the code in a git repository was **written by a person** or **AI-generated** — commit by
+commit, and as a month-by-month timeline over the repository's history. Code a person wrote together with
+AI counts as human-written (see [Classes](#classes)).
 Works on Python, JavaScript/TypeScript, C++ and C# code.
 
 New here? Follow the **[Quick start](#quick-start-windows--nvidia-gpu)** below — no Python knowledge
@@ -82,7 +83,7 @@ aicontrib report "C:\path\to\some\repository"
 ```
 
 This creates a file named `<repository-name>-authorship-timeline.html` in the current folder —
-double-click it to see, month by month, the share of human, co-authored and AI-written commits. Only
+double-click it to see, month by month, the share of human-written and AI-generated commits. Only
 commits that change code are counted; commits touching only other files (XML, images, documents,
 proprietary formats…) are ignored. More in [Authorship timeline report](#authorship-timeline-report).
 
@@ -162,7 +163,7 @@ still fails, set a smaller batch in `configs/local.yaml`, e.g.
 1. A frozen pretrained code encoder ([`Salesforce/codet5p-110m-embedding`](https://huggingface.co/Salesforce/codet5p-110m-embedding))
    turns a code snippet into a 256-dim vector (or, with `embedding.representation: hidden`, a longer
    vector read from its internal layers — see [Embedding representation](#embedding-representation)).
-2. A small trainable MLP classifies that vector into `human` / `co_authored` / `ai`.
+2. A small trainable MLP classifies that vector as `human` or `ai`.
 3. Only the MLP is trained — the encoder is frozen, so training is fast even on CPU. A GPU, if present,
    is used automatically to speed up the one-time embedding pass over the dataset.
 4. For git commits, the changed region of each file in the diff is reconstructed and classified the same
@@ -172,7 +173,7 @@ still fails, set a smaller batch in `configs/local.yaml`, e.g.
 
 A **frozen pretrained encoder + small trainable classification head** — linear-probe-style transfer
 learning, chosen so training stays cheap (the encoder runs once per sample, never backpropagates) and the
-3-class head can't memorize a large dataset.
+2-class head can't memorize a large dataset.
 
 ```mermaid
 flowchart LR
@@ -180,8 +181,8 @@ flowchart LR
     B --> C["CodeT5+ encoder<br/>12 layers · d=768 · 12 heads<br/>FROZEN"]
     C --> D["First-token hidden state<br/>768-d"]
     D --> E["Linear 768→256 + L2-norm<br/>FROZEN"]
-    E --> F["MLP head<br/>256→128→64→3<br/>TRAINED"]
-    F --> G["softmax<br/>P(human), P(co-authored), P(AI)"]
+    E --> F["MLP head<br/>256→128→64→2<br/>TRAINED"]
+    F --> G["softmax<br/>P(human), P(AI)"]
 ```
 
 | Stage | Details |
@@ -189,8 +190,8 @@ flowchart LR
 | Tokenizer | RoBERTa-style BPE (vocab 32,103), `<s>` prepended; inputs truncated to **512 tokens** (`embedding.max_length`) |
 | Encoder | [`Salesforce/codet5p-110m-embedding`](https://huggingface.co/Salesforce/codet5p-110m-embedding): T5 encoder stack, 12 layers, d_model 768, 12 heads, FFN 3072 (ReLU). 134.5M parameters as loaded — the "110m" in the name excludes the ~25M-parameter token-embedding table. Contrastively pretrained for code retrieval on C, C++, C#, Go, Java, JavaScript, PHP, Python, Ruby |
 | Pooling / projection | `embedding.representation: projected` (default): final hidden state of the first (`<s>`) token → linear projection to 256-d → L2 normalization (part of the pretrained model, frozen). `hidden`: the hidden states of each layer in `embedding.hidden_layers` (default 6 and 12), averaged over all non-padding tokens and concatenated — 768-d per layer, so 1,536-d by default. See [Embedding representation](#embedding-representation) |
-| Head | Per-feature standardization (mean/std of the training set, saved in the checkpoint), then `Linear(d,128) → ReLU → Dropout(0.2) → Linear(128,64) → ReLU → Dropout(0.2) → Linear(64,3)` — **41,347 trainable parameters** with the 256-d projected input (`aicontrib/model/classifier.py`) |
-| Output | softmax over `human` / `co_authored` / `ai` |
+| Head | Per-feature standardization (mean/std of the training set, saved in the checkpoint), then `Linear(d,128) → ReLU → Dropout(0.2) → Linear(128,64) → ReLU → Dropout(0.2) → Linear(64,2)` — **41,282 trainable parameters** with the 256-d projected input (`aicontrib/model/classifier.py`) |
+| Output | softmax over `human` / `ai` (`classes.names`) |
 
 **Training** (`aicontrib/model/train.py`, hyperparameters in `configs/default.yaml`):
 
@@ -231,8 +232,27 @@ it holds) and `aicontrib train`. A checkpoint also records its representation, s
 Compare the two with `aicontrib evaluate` and [`aicontrib generator-holdout`](#generalization-to-unseen-ai-models).
 
 **Labels** come from AICD-Bench's fine-grained task (human / machine / hybrid / adversarial → `human` /
-`ai` / `co_authored` / `ai`) plus CodeMirage's binary labels — see [Dataset](#dataset). Evaluation
-(`aicontrib evaluate`) reports per-class precision/recall/F1 and a confusion matrix on the held-out test split.
+`ai` / `human` / `ai`) plus CodeMirage's binary labels — see [Dataset](#dataset) and [Classes](#classes).
+Evaluation (`aicontrib evaluate`) reports per-class precision/recall/F1, a confusion matrix and the AUC on
+the held-out test split.
+
+### Classes
+
+The model is **binary: `human` or `ai`**. AICD-Bench also labels *hybrid* code, written by a person and an
+AI together; `classes.remap: {co_authored: human}` counts it as human, so `ai` means "AI-generated", not
+"AI was involved". Why not a third class: the earlier 3-class model's `co_authored` class was its weakest
+(F1 ~0.55 vs ~0.6 for the others), and whether a single file is "co-authored" is hard even to define.
+
+To go back to three classes, set in `configs/local.yaml`:
+
+```yaml
+classes:
+  names: ["human", "co_authored", "ai"]
+  remap: {}
+```
+
+and re-run `prepare`, `embed` and `train`. A checkpoint records its classes, so every command refuses a
+model trained for other classes than the config's.
 
 **From files to commits** (`aicontrib/diff/commit.py`). The model only ever sees snippets; a commit is
 scored by composing per-file predictions:
@@ -261,13 +281,13 @@ Training data is pulled from two sources (`configs/default.yaml` → `dataset.so
 class hits its per-split cap (see `data/prepare.py`):
 
 1. **[AICD-Bench](https://huggingface.co/datasets/AICD-bench/AICD-Bench)** (EACL 2026, config `T3`), our
-   primary and only source for `co_authored` samples. It labels code as human / machine / hybrid /
-   adversarial across 9 languages. We map:
+   primary source and the only one with human/AI *hybrid* code. It labels code as human / machine /
+   hybrid / adversarial across 9 languages. We map:
 
    | AICD-Bench label | Our class     |
    |---|---|
    | human             | `human`       |
-   | hybrid            | `co_authored` |
+   | hybrid            | `co_authored`, counted as `human` by default (`classes.remap`, see [Classes](#classes)) |
    | machine           | `ai`          |
    | adversarial       | `ai` (folded in — still AI-authored, just harder to detect) |
 
@@ -281,7 +301,7 @@ class hits its per-split cap (see `data/prepare.py`):
 
 2. **[CodeMirage](https://huggingface.co/datasets/HanxiGuo/CodeMirage)** (arXiv:2506.11059) tops up the
    `human`/`ai` buckets with extra diversity — different generator families (Claude, o3-mini) not in
-   AICD-Bench's 11. It's binary-only (no hybrid label), so it never contributes to `co_authored`.
+   AICD-Bench's 11. It's binary-only (no hybrid label).
    **Licensed CC-BY-NC-ND-4.0** — non-commercial use only, no redistributing a derivative model.
 
 **Licensing, in short:** both sources restrict use to research / non-commercial purposes, so a model
@@ -465,7 +485,7 @@ aicontrib report C:\Users\me\repos\my-project
 
 It classifies every commit in the history and writes a single self-contained HTML file (no internet or
 server needed — just open it; safe to email or attach) showing, **per month over the years, the share of
-human / co-authored / AI commits** as 100% stacked bars, with commit volume underneath, overall
+human-written and AI-generated commits** as 100% stacked bars, with commit volume underneath, overall
 percentages at the top, hover/keyboard tooltips, and a data table. Output goes to
 `./<repo-name>-authorship-timeline.html` unless you pass `-o/--output some/file.html`. The page shows the
 repo's folder name only, never its full local path.
@@ -536,8 +556,8 @@ python -m aicontrib evaluate-repo --all
 ```
 
 Besides accuracy, the output shows how many commits went to each class and the mean probability of every
-class, not just the expected one. That tells you where the missing probability goes: to the opposite class,
-or to `co_authored`.
+class, not just the expected one. With the 3-class model, that tells you where the missing probability
+goes: to the opposite class, or to `co_authored`.
 
 **`--added-files-only`** scores only the files each commit *creates*. A new file is whole, like the
 training snippets; an edit to an existing file is classified as its hunks stitched together (see Known
@@ -681,7 +701,7 @@ per-split runtime (up to hours) makes checkpointing worthwhile.
 - **Only the first 512 tokens of each text are seen.** Longer files and hunks are truncated by the encoder.
 - **Class imbalance is not corrected.** With the default uncapped dataset, class frequencies follow the
   sources and cross-entropy is unweighted; macro-F1 checkpoint selection only partly compensates. If the
-  minority class (usually `co_authored`) is under-predicted, set `per_class_cap` in `configs/local.yaml`
+  minority class is under-predicted, set `per_class_cap` in `configs/local.yaml`
   to balance the classes.
 - **TypeScript isn't in the training data** — `.ts`/`.tsx` files reuse the JavaScript path, unvalidated.
 - **Label semantics for AICD-Bench are inferred, not documented.** `aicontrib/data/sources.py`'s
