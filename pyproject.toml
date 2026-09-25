@@ -33,4 +33,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aicontrib = ["static/*.html"]
+aicontrib = ["static/*.html", "data/*.npz", "data/*.json"]

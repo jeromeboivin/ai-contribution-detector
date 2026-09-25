@@ -14,6 +14,20 @@
 #     validation: 1000
 #     test: 1000
 
+# ---- Train only on some programming languages ----------------------------------------
+# Applies to every split (train, validation, test). Use `include` (keep only these) or
+# `exclude` (keep everything but these). Names are case-insensitive:
+# C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML.
+# The README's "Languages in the training data" table shows how much data each one has.
+# Re-run `aicontrib prepare` (then embed/train) after changing this.
+#
+# dataset:
+#   languages:
+#     include: [Python, JavaScript, C++, C#]
+#     # exclude: [Rust, Ruby, HTML]
+#
+# (If you also use per_class_cap above, put both under the same single `dataset:` key.)
+
 # ---- Repos with known authorship, for `aicontrib evaluate-repo --all` ----------------
 # `path` is an absolute path to a local git clone; `expected_class` is human / co_authored / ai.
 #

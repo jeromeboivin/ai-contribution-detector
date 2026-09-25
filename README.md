@@ -53,7 +53,9 @@ dataset:
     test: 1000
 ```
 
-(Later, to train on the full dataset, delete these lines and run the four commands below again.)
+(Later, to train on the full dataset, delete these lines and run the four commands below again. To
+train only on some programming languages, see
+[Choosing which languages to train on](#choosing-which-languages-to-train-on).)
 
 Then run these four commands, one after the other:
 
@@ -126,6 +128,14 @@ Upgrade it:
 `False`" above. On CPU the full dataset takes days.
 
 **`embed` was interrupted** — just run `aicontrib embed` again; it resumes from its last checkpoint.
+
+**"Fatal Python error: PyGILState_Release" at the very end of `prepare`** — an occasional shutdown glitch
+in the dataset-streaming library, after the work is finished. If the lines before it say `wrote ...
+rows` for each split, the output is complete; carry on with `embed`.
+
+**"Unknown language ... Valid names: ..."** — a typo in `dataset.languages` in `configs/local.yaml`. Use
+the names listed. TypeScript isn't one of them: it's not in the training data, and TypeScript files are
+analysed as JavaScript.
 
 **`embed` shows an estimate of many hours** — its estimate only covers the split it's working on
 (train, then validation, then test), so the total is longer still. Stop it with Ctrl+C, use a smaller
@@ -223,11 +233,19 @@ class hits its per-split cap (see `data/prepare.py`):
    a hypothesis inferred from spot-checking real rows. **Run `aicontrib audit` and eyeball the output before
    trusting it** (see Known limitations).
 
+   **Research use only.** The Hugging Face page declares no license, but the paper's "Usage Restrictions"
+   state the dataset is for academic and research purposes, with commercial use prohibited without the
+   creators' written consent and no redistribution without authorization.
+
 2. **[CodeMirage](https://huggingface.co/datasets/HanxiGuo/CodeMirage)** (arXiv:2506.11059) tops up the
    `human`/`ai` buckets with extra diversity — different generator families (Claude, o3-mini) not in
    AICD-Bench's 11. It's binary-only (no hybrid label), so it never contributes to `co_authored`.
-   **Licensed CC-BY-NC-ND-4.0** — non-commercial use only, no redistributing a derivative model. Set
-   `enabled: false` on it in `configs/default.yaml` if this stops being a personal/research project.
+   **Licensed CC-BY-NC-ND-4.0** — non-commercial use only, no redistributing a derivative model.
+
+**Licensing, in short:** both sources restrict use to research / non-commercial purposes, so a model
+trained on this data should be treated as research-only. Disabling CodeMirage alone doesn't change that,
+since AICD-Bench carries its own restriction. Commercial use would need the dataset creators' consent.
+This repository only contains code; the data is downloaded from Hugging Face when you run `prepare`.
 
 **DroidCollection is deliberately not a separate source.** AICD-Bench is built directly on top of Droid —
 extended with new generators/languages and MinHash-deduplicated *against* Droid itself (AICD-Bench paper,
@@ -237,6 +255,57 @@ reintroduce near-duplicate rows the AICD authors deliberately removed, risking t
 Both sources cover Python, JavaScript, C++, and C# directly, but not TypeScript — nor does any other
 AI-vs-human code dataset I could find (also checked: HybridCodeAuthorship, MultiAIGCD, HMCorp,
 AIGCodeSet). `.ts`/`.tsx` files are routed through the JavaScript-trained path as an approximation.
+
+### Languages in the training data
+
+Samples per programming language, all splits combined (train + validation + test):
+
+| Language | AICD-Bench | CodeMirage | Combined |
+|---|---:|---:|---:|
+| Python | 545,002 (26.0%) | 20,999 (10.0%) | 566,001 (24.5%) |
+| Java | 469,504 (22.4%) | 21,000 (10.0%) | 490,504 (21.2%) |
+| C# | 242,646 (11.6%) | 20,995 (10.0%) | 263,641 (11.4%) |
+| JavaScript | 182,099 (8.7%) | 21,000 (10.0%) | 203,099 (8.8%) |
+| C | 176,650 (8.4%) | 21,000 (10.0%) | 197,650 (8.6%) |
+| Go | 151,509 (7.2%) | 21,000 (10.0%) | 172,509 (7.5%) |
+| C++ | 149,026 (7.1%) | 20,999 (10.0%) | 170,025 (7.4%) |
+| PHP | 134,488 (6.4%) | 20,996 (10.0%) | 155,484 (6.7%) |
+| Rust | 49,075 (2.3%) | — | 49,075 (2.1%) |
+| Ruby | — | 21,000 (10.0%) | 21,000 (0.9%) |
+| HTML | — | 20,997 (10.0%) | 20,997 (0.9%) |
+| **Total** | **2,099,999** | **209,986** | **2,309,985** |
+
+How these were obtained (full figures in `src/aicontrib/data/language_stats.json`):
+
+- **CodeMirage** has a language column: exact counts.
+- **AICD-Bench** has none. It's built on DroidCollection, which is language-labelled, so each of the
+  1.03M AICD-Bench rows (49%) whose code is identical to a Droid row takes Droid's label. The other
+  1.07M are labelled by a token n-gram classifier trained on Droid's labels: 94.5% accurate on held-out
+  Droid rows and 94.5% on CodeMirage (an independent dataset) — 98–99.5% for Python, Java, C#,
+  JavaScript, Go and PHP, but only ~81% for C vs C++ (a short C function is usually valid C++ too). So
+  treat the C and C++ rows as approximate; their sum is reliable.
+- Your four target languages (Python, JavaScript, C++, C#) make up 52% of the data.
+
+The per-row labels ship with the code (`src/aicontrib/data/aicd_t3_languages.npz`, labels only, tied to
+the pinned `hf_revision` of AICD-Bench). Maintainers can rebuild them and this table with
+`aicontrib language-census` (~15 minutes; streams DroidCollection, AICD-Bench and CodeMirage).
+
+### Choosing which languages to train on
+
+In `configs/local.yaml`, keep only the languages you care about — or drop the ones you don't:
+
+```yaml
+dataset:
+  languages:
+    include: [Python, JavaScript, C++, C#]     # keep only these
+    # exclude: [Rust, Ruby, HTML]              # ...or keep everything except these
+```
+
+Names are case-insensitive: C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML. The filter
+applies to every split (train, validation and test), so evaluation measures the same languages you
+train on. Then re-run `aicontrib prepare`, `embed` and `train`; `prepare` prints how many samples each
+language contributed and how many were excluded. It combines with `per_class_cap` — put both under the
+same `dataset:` key.
 
 ## Setup
 
@@ -492,7 +561,9 @@ per-split runtime (up to hours) makes checkpointing worthwhile.
 - **Label semantics for AICD-Bench are inferred, not documented.** `aicontrib/data/sources.py`'s
   `_AICD_BENCH_LABEL_MAP` is a hypothesis based on manually reading sample rows, not an official mapping
   from the dataset authors.
-- **No per-language breakdown.** AICD-Bench's public parquet has no `language` column (CodeMirage does),
-  so we can't currently report or filter accuracy per programming language.
+- **AICD-Bench languages are partly inferred.** Its public files have no language column; rows copied
+  from DroidCollection get Droid's exact label, the rest a classifier's (see
+  [Languages in the training data](#languages-in-the-training-data)). C vs C++ is the least reliable split.
+  `aicontrib evaluate` doesn't yet report accuracy per language, although each prepared sample now records it.
 - **PR-level aggregation is out of scope for this phase.** The natural next step once commit-level
   predictions are validated is aggregating across a PR's commits.

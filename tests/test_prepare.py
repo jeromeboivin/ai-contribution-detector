@@ -7,7 +7,7 @@ def _fake_sources(rows_by_source):
     """rows_by_source: {source_name: [(code, class_name), ...]}"""
 
     def fake_iter_source(source_cfg, out_name):
-        return iter(rows_by_source.get(source_cfg["name"], []))
+        return iter((code, cls, None) for code, cls in rows_by_source.get(source_cfg["name"], []))
 
     return fake_iter_source
 

@@ -1,0 +1,104 @@
+{
+  "generated": "2026-09-25",
+  "aicd_bench": {
+    "revision": "b7dc6d82257de6e0146d1e7b0831abd7088633af",
+    "splits": {
+      "train": {
+        "rows": 900000,
+        "by_language": {
+          "C": 52561,
+          "C#": 109005,
+          "C++": 72580,
+          "Go": 57747,
+          "Java": 236207,
+          "JavaScript": 74987,
+          "PHP": 47141,
+          "Python": 249575,
+          "Rust": 197
+        },
+        "exact_droid_match": 580840,
+        "classified": 319160
+      },
+      "validation": {
+        "rows": 200000,
+        "by_language": {
+          "C": 11767,
+          "C#": 24072,
+          "C++": 15929,
+          "Go": 12702,
+          "Java": 52638,
+          "JavaScript": 16750,
+          "PHP": 10645,
+          "Python": 55443,
+          "Rust": 54
+        },
+        "exact_droid_match": 128855,
+        "classified": 71145
+      },
+      "test": {
+        "rows": 1000000,
+        "by_language": {
+          "C": 112322,
+          "C#": 109569,
+          "C++": 60517,
+          "Go": 81060,
+          "Java": 180659,
+          "JavaScript": 90362,
+          "PHP": 76702,
+          "Python": 239984,
+          "Rust": 48824
+        },
+        "exact_droid_match": 322362,
+        "classified": 677637
+      }
+    }
+  },
+  "codemirage": {
+    "splits": {
+      "train": {
+        "rows": 146990,
+        "by_language": {
+          "C": 14700,
+          "C#": 14696,
+          "C++": 14700,
+          "Go": 14700,
+          "HTML": 14697,
+          "Java": 14700,
+          "JavaScript": 14700,
+          "PHP": 14698,
+          "Python": 14699,
+          "Ruby": 14700
+        }
+      },
+      "test": {
+        "rows": 62996,
+        "by_language": {
+          "C": 6300,
+          "C#": 6299,
+          "C++": 6299,
+          "Go": 6300,
+          "HTML": 6300,
+          "Java": 6300,
+          "JavaScript": 6300,
+          "PHP": 6298,
+          "Python": 6300,
+          "Ruby": 6300
+        }
+      }
+    }
+  },
+  "classifier_validation": {
+    "held_out_droid_accuracy": 0.9452,
+    "codemirage_accuracy": 0.9449,
+    "codemirage_f1_by_language": {
+      "C": 0.8116,
+      "C#": 0.9945,
+      "C++": 0.8096,
+      "Go": 0.9925,
+      "Java": 0.995,
+      "JavaScript": 0.9815,
+      "PHP": 0.9865,
+      "Python": 0.9891
+    }
+  }
+}

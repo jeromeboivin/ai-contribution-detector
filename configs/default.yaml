@@ -16,7 +16,13 @@ dataset:
       adapter: aicd_bench
       hf_repo: "AICD-bench/AICD-Bench"
       hf_config: "T3"          # fine-grained human/machine/hybrid/adversarial task
-      # No official license declared on the HF repo.
+      # Pinned: the shipped per-row language index (aicontrib/data/aicd_t3_languages.npz) describes
+      # exactly this revision. Changing it requires `aicontrib language-census` to rebuild the index.
+      hf_revision: "b7dc6d82257de6e0146d1e7b0831abd7088633af"
+      # No license on the HF repo, but the paper (arXiv:2602.02079, "Usage Restrictions") says:
+      # academic/research use only, commercial use prohibited without the creators' written consent,
+      # redistribution not permitted without authorization.
+      license: "research-only (per paper)"
       hf_splits: {train: train, validation: validation, test: test}
     - name: codemirage
       enabled: true
@@ -39,6 +45,13 @@ dataset:
     train: null
     validation: null
     test: null
+
+  # Keep only some programming languages, in every split (set this in configs/local.yaml):
+  #   languages: {include: [Python, JavaScript, C++, C#]}     keep only these
+  #   languages: {exclude: [Rust, Ruby, HTML]}                keep everything but these
+  # Names: C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML (case-insensitive).
+  # Per-language shares of each dataset: aicontrib/data/language_stats.json and README.
+  languages: {}
 
 classes:
   names: ["human", "co_authored", "ai"]

@@ -54,6 +54,10 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("audit", help="Print sample rows per raw dataset label to validate the label mapping")
+    subparsers.add_parser(
+        "language-census",
+        help="(Maintainers) Rebuild the per-language statistics and AICD-Bench language index (~20 min)",
+    )
     subparsers.add_parser("prepare", help="Stream and cache the labeled/capped train/val/test JSONL splits")
     embed_parser = subparsers.add_parser("embed", help="Compute and cache embeddings for each split")
     embed_parser.add_argument("--force", action="store_true", help="Recompute even if cached")
@@ -104,6 +108,13 @@ def main(argv: list[str] | None = None) -> None:
         from aicontrib.data.audit import audit
 
         audit()
+    elif args.command == "language-census":
+        import time
+
+        from aicontrib.config import load_config
+        from aicontrib.data.languages import run_census
+
+        run_census(load_config(), log=lambda msg: print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True))
     elif args.command == "prepare":
         from aicontrib.data.prepare import prepare_all
 

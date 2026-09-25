@@ -14,7 +14,8 @@ from aicontrib.config import load_config
 def audit(n_per_label: int = 15, split: str = "train", source_name: str = "aicd_bench") -> None:
     cfg = load_config()
     source_cfg = next(s for s in cfg["dataset"]["sources"] if s["name"] == source_name)
-    ds = load_dataset(source_cfg["hf_repo"], source_cfg["hf_config"], split=split, streaming=True)
+    ds = load_dataset(source_cfg["hf_repo"], source_cfg["hf_config"], split=split, streaming=True,
+                      revision=source_cfg.get("hf_revision"))
 
     seen: dict[int, int] = defaultdict(int)
     labels_wanted = {0, 1, 2, 3}
