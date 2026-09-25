@@ -35,7 +35,27 @@ any line shows an error, see [Troubleshooting](#troubleshooting).
 
 ### 2. Train the model (once)
 
-Run these four commands, one after the other:
+**Recommended for a first try: use a small part of the dataset.** The full dataset can take days to
+process even on a good graphics card; a 1.5% sample takes about an hour and is enough to check that
+everything works end to end. Open your personal settings file in Notepad:
+
+```powershell
+notepad configs\local.yaml
+```
+
+Click **Yes** if Notepad asks to create the file, paste these lines, and save:
+
+```yaml
+dataset:
+  per_class_cap:
+    train: 10000
+    validation: 1000
+    test: 1000
+```
+
+(Later, to train on the full dataset, delete these lines and run the four commands below again.)
+
+Then run these four commands, one after the other:
 
 ```powershell
 aicontrib prepare
@@ -106,6 +126,11 @@ Upgrade it:
 `False`" above. On CPU the full dataset takes days.
 
 **`embed` was interrupted** — just run `aicontrib embed` again; it resumes from its last checkpoint.
+
+**`embed` shows an estimate of many hours** — its estimate only covers the split it's working on
+(train, then validation, then test), so the total is longer still. Stop it with Ctrl+C, use a smaller
+dataset (see step 2 of the [Quick start](#2-train-the-model-once)), then run `aicontrib prepare` and
+`aicontrib embed` again. The progress made on the full dataset is discarded when you change the size.
 
 ## How it works
 
@@ -428,18 +453,20 @@ paths.
 
 The embedding step (`aicontrib embed`) is the only slow part -- it's a forward pass through a 110M-param
 transformer for every row, and the MLP training itself is fast regardless of hardware once embeddings are
-cached. `per_class_cap` in `configs/default.yaml` defaults to `null` (no cap) on the assumption you're
-running this on a GPU: full AICD-Bench T3 + CodeMirage is on the order of 2M+ rows total across splits.
+cached. `per_class_cap` defaults to `null` (no cap): full AICD-Bench T3 + CodeMirage is ~2.3M rows
+across splits (train ~1.05M, validation ~0.2M, test ~1.06M).
 
-- **CPU-only**: measured throughput on an 8-core CPU with realistic (non-trivial-length) code samples was
-  **~1.6 rows/sec** -- the full dataset would take multiple *days*. Set explicit numbers in
-  `per_class_cap` instead, e.g. `{train: 8000, validation: 1500, test: 1500}` finishes in a few hours.
-- **GPU**: throughput depends heavily on the card, but a full run is still likely to take a while at this
-  scale -- it's safe to just start it and check back later via the [live dashboard](#live-training-dashboard).
+Measured embedding throughput at the default batch size:
 
-Either way, runtime scales linearly with row count -- if a full run is taking longer than expected, lower
-`per_class_cap` rather than waiting it out, then raise it again once the pipeline's been validated
-end-to-end on your hardware.
+| Hardware | Rows/sec | Full dataset | 10,000 / 1,000 / 1,000 per class (~36K rows) |
+|---|---|---|---|
+| 8-core CPU | ~1.6 | ~2 weeks | ~6 hours |
+| Windows desktop GPU | ~10 | ~65 hours | ~1 hour |
+
+Runtime scales linearly with row count. To cap it, set `per_class_cap` in `configs/local.yaml` (see
+`configs/local.example.yaml` and step 2 of the [Quick start](#2-train-the-model-once)) rather than in
+`default.yaml`, so `git pull` keeps working. Caps also balance the classes, which the uncapped data is
+not (CodeMirage alone is ~140K AI vs 7K human samples).
 
 **Interrupting and resuming.** `aicontrib embed` is safe to stop (Ctrl-C, closing the terminal, a reboot)
 and restart at any point -- it checkpoints to `data/embeddings/{split}.partial.npz` every
@@ -459,7 +486,8 @@ per-split runtime (up to hours) makes checkpointing worthwhile.
 - **Only the first 512 tokens of each text are seen.** Longer files and hunks are truncated by the encoder.
 - **Class imbalance is not corrected.** With the default uncapped dataset, class frequencies follow the
   sources and cross-entropy is unweighted; macro-F1 checkpoint selection only partly compensates. If the
-  minority class (usually `co_authored`) is under-predicted, set `per_class_cap` to balance the classes.
+  minority class (usually `co_authored`) is under-predicted, set `per_class_cap` in `configs/local.yaml`
+  to balance the classes.
 - **TypeScript isn't in the training data** — `.ts`/`.tsx` files reuse the JavaScript path, unvalidated.
 - **Label semantics for AICD-Bench are inferred, not documented.** `aicontrib/data/sources.py`'s
   `_AICD_BENCH_LABEL_MAP` is a hypothesis based on manually reading sample rows, not an official mapping

@@ -1,29 +1,35 @@
-# Copy this file to configs/local.yaml (already in .gitignore) and fill in real local paths.
-# Entries here are appended to `known_repos` from configs/default.yaml -- see README
-# "Real-world validation against known-authorship repos".
+# Personal settings. Copy this file to configs/local.yaml (never committed to git) and
+# uncomment what you need. Anything here overrides configs/default.yaml -- only the keys you
+# set; everything else keeps its default. Editing local.yaml instead of default.yaml means
+# `git pull` never conflicts with your changes.
+
+# ---- Quick prototype: train on a subset of the data ---------------------------------
+# The full dataset (~2.3M samples) can take days to embed. Rows are capped per class and per
+# split; 10000/1000/1000 is ~36,000 samples (~1.5% of the data, so ~1/60th of the time) and
+# gives balanced classes. Remove these lines (or set them to null) to go back to the full data.
 #
-# `path` must be an absolute path to a local git clone. `expected_class` is one of
-# human / co_authored / ai -- whatever you know for certain about that repo's authorship.
+# dataset:
+#   per_class_cap:
+#     train: 10000
+#     validation: 1000
+#     test: 1000
+
+# ---- Repos with known authorship, for `aicontrib evaluate-repo --all` ----------------
+# `path` is an absolute path to a local git clone; `expected_class` is human / co_authored / ai.
 #
 # Path syntax
-# -----------
-# Linux / macOS:  path: "/home/me/repos/tslint"
+#   Linux / macOS:  path: "/home/me/repos/tslint"
+#   Windows -- use ONE of these three forms:
+#     path: 'C:\Users\me\repos\tslint'     # single quotes: backslashes are taken literally
+#     path: "C:/Users/me/repos/tslint"     # forward slashes: work fine on Windows, any quotes
+#     path: "C:\\Users\\me\\repos\\tslint" # double quotes need every backslash doubled
+#   Do NOT write  path: "C:\Users\me\repos\tslint"  -- inside double quotes YAML reads
+#   backslashes as escape sequences (\U, \r, \t...) and the whole config fails to load.
 #
-# Windows -- use ONE of these three forms:
-#   path: 'C:\Users\me\repos\tslint'     # single quotes: backslashes are taken literally
-#   path: "C:/Users/me/repos/tslint"     # forward slashes: work fine on Windows, any quotes
-#   path: "C:\\Users\\me\\repos\\tslint" # double quotes need every backslash doubled
-#
-# Do NOT write  path: "C:\Users\me\repos\tslint"  -- inside double quotes YAML reads
-# backslashes as escape sequences (\U, \r, \t...) and the whole config fails to load.
-
-known_repos:
-  - name: tslint
-    path: "/absolute/path/to/tslint"  # git clone https://github.com/palantir/tslint.git
-    # path: 'C:\Users\me\repos\tslint'  # Windows equivalent
-    expected_class: human
-
-  - name: my-private-ai-repo
-    path: "/absolute/path/to/your/private/repo"
-    # path: 'C:\Users\me\repos\my-private-ai-repo'  # Windows equivalent
-    expected_class: ai
+# known_repos:
+#   - name: tslint
+#     path: 'C:\Users\me\repos\tslint'  # git clone https://github.com/palantir/tslint.git
+#     expected_class: human
+#   - name: my-private-ai-repo
+#     path: 'C:\Users\me\repos\my-private-ai-repo'
+#     expected_class: ai
