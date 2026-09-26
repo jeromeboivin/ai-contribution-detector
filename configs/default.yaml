@@ -3,22 +3,24 @@
 
 dataset:
   # Sources are pulled in order until every class hits per_class_cap for that split
-  # (see prepare.py). AICD-Bench is fine-grained (human/co_authored/ai, see classes.remap) so it's
-  # listed first; CodeMirage is binary-only and only tops up the human/ai buckets.
+  # (see prepare.py): the small real-repository TypeScript data first, then AICD-Bench (fine-grained
+  # human/co_authored/ai, see classes.remap); CodeMirage is binary-only and only tops up human/ai.
   #
   # DroidCollection is deliberately NOT included as a separate source: AICD-Bench is
   # built directly on top of Droid (extended + MinHash-deduplicated against it -- see
   # the AICD-Bench paper, arXiv:2602.02079, Sec. 3), so its content is already folded
   # into AICD-Bench. Adding Droid again would only reintroduce near-duplicate rows.
   sources:
-    # Real-repository commits signed by coding agents vs pre-2021 human commits, TypeScript by default.
-    # Built locally by `aicontrib build-agent-commits` (see README); skipped until then. Listed first:
-    # it's small, and sources are pulled in order until the caps are reached.
+    # Real-repository commits signed by coding agents vs pre-2021 human commits, TypeScript (see README).
+    # A local build (`aicontrib build-agent-commits`) in `path` is used if present, else the gzipped
+    # archives shipped in the repo (51 repositories; see CREDITS.md). Listed first: sources are pulled in
+    # order until the caps are reached (see dataset.balance_languages).
     - name: agent_commits
       enabled: true
       adapter: agent_commits
       path: "data/agent_commits"
-      license: "each source repository's own license (code stays local; don't redistribute)"
+      archive: ["datasets/agent_commits", "datasets/agent_commits/copyleft"]
+      license: "each source repository's own license -- see CREDITS.md (copyleft rows: GPL-3.0/AGPL-3.0)"
       hf_splits: {train: train, validation: validation, test: test}
     - name: aicd_bench
       enabled: true

@@ -339,6 +339,13 @@ AIGCodeSet). TypeScript comes from a third source you build yourself:
 
 ### Real-repository data: agent-signed commits
 
+**It's already in the repo.** `datasets/agent_commits/` holds a build (September 2026) of the 51 repositories
+whose licenses allow redistribution: 5,438 rows per class, permissive licenses in the folder itself and
+GPL/AGPL rows in `copyleft/`, each with its license texts — see [CREDITS.md](CREDITS.md). `prepare` reads
+these gzipped files directly when there's no local build, so nothing needs to be run or unpacked. To build
+it yourself instead — all qualifying repositories, including the 16 whose licenses don't allow
+redistribution (the local build then takes precedence):
+
 ```bash
 aicontrib build-agent-commits                 # 185 repositories, about an hour; try --max-repos 3 first
 ```
@@ -390,7 +397,8 @@ the diff); unsigned 2024+ commits are never used, as they may be AI-written too.
 confounded with the label**: human rows are ~2016–2021 code, AI rows 2024–2026 code, so the model could
 partly learn "recent" instead of "AI" — newer frameworks, language features and dependencies. Your own
 known repos (`evaluate-repo`, `binoculars`) remain the check for that. The code belongs to each
-repository's authors under its own license: it stays on your machine; don't redistribute it.
+repository's authors under its own license: a local build contains code whose licenses don't allow
+redistribution, so don't publish it — the archive in the repo holds only the redistributable part.
 
 ### Languages in the training data
 

@@ -9,6 +9,7 @@ near-duplicate rows the AICD authors deliberately removed.
 """
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 from typing import Any, Iterator
@@ -53,18 +54,29 @@ def iter_codemirage(source_cfg: dict[str, Any], hf_split: str) -> Iterator[Row]:
         yield row["code"], cls, canonical(row["language"])
 
 
+def _repo_path(path: str) -> Path:
+    p = Path(path)
+    return p if p.is_absolute() else REPO_ROOT / p
+
+
 def iter_agent_commits(source_cfg: dict[str, Any], split: str) -> Iterator[Row]:
-    """Local files written by `aicontrib build-agent-commits` (aicontrib/data/agent_commits.py);
-    nothing until they exist."""
-    path = Path(source_cfg["path"])
-    path = (path if path.is_absolute() else REPO_ROOT / path) / f"{split}.jsonl"
-    if not path.exists():
-        print(f"[{source_cfg['name']}] no {path} -- run `aicontrib build-agent-commits` to use this source")
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            row = json.loads(line)
-            yield row["code"], row["label"], canonical(row["language"])
+    """A local build by `aicontrib build-agent-commits` (aicontrib/data/agent_commits.py) if there is one,
+    else the gzipped archives shipped in the repo (`archive`: the permissively licensed rows and the
+    copyleft ones, kept apart), decompressed as they're read."""
+    local = _repo_path(source_cfg["path"]) / f"{split}.jsonl"
+    if local.exists():
+        files = [local]
+    else:
+        files = [p for d in source_cfg.get("archive") or [] if (p := _repo_path(d) / f"{split}.jsonl.gz").exists()]
+        if not files:
+            print(f"[{source_cfg['name']}] no {local} and no archive -- run `aicontrib build-agent-commits`")
+            return
+    print(f"[{source_cfg['name']}] reading {', '.join(str(p) for p in files)}")
+    for path in files:
+        with (gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else open(path, encoding="utf-8")) as f:
+            for line in f:
+                row = json.loads(line)
+                yield row["code"], row["label"], canonical(row["language"])
 
 
 ADAPTERS = {

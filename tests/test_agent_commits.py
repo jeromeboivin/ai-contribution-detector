@@ -119,3 +119,43 @@ def test_remove_clone_handles_read_only_git_objects(tmp_path):
     pack.chmod(0o444)  # as git leaves it; blocks deletion on Windows
     ac._remove_clone(clone)
     assert not clone.exists()
+
+
+def _write_gz(path, rows):
+    import gzip
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        for code, label in rows:
+            f.write(json.dumps({"code": code, "label": label, "language": "TypeScript"}) + "\n")
+
+
+def test_archives_are_read_when_there_is_no_local_build(tmp_path):
+    _write_gz(tmp_path / "archive" / "train.jsonl.gz", [("mit-h", "human"), ("mit-a", "ai")])
+    _write_gz(tmp_path / "archive" / "copyleft" / "train.jsonl.gz", [("gpl-h", "human")])
+    source = {"name": "agent_commits", "path": str(tmp_path / "no-local-build"),
+              "archive": [str(tmp_path / "archive"), str(tmp_path / "archive" / "copyleft")]}
+
+    assert [code for code, _, _ in iter_agent_commits(source, "train")] == ["mit-h", "mit-a", "gpl-h"]
+    assert list(iter_agent_commits(source, "validation")) == []  # no file for that split
+
+
+def test_a_local_build_takes_precedence_over_the_archives(tmp_path):
+    _write_gz(tmp_path / "archive" / "train.jsonl.gz", [("archived", "ai")])
+    (tmp_path / "local").mkdir()
+    (tmp_path / "local" / "train.jsonl").write_text(json.dumps({"code": "local", "label": "ai", "language": "ts"}) + "\n")
+    source = {"name": "agent_commits", "path": str(tmp_path / "local"), "archive": [str(tmp_path / "archive")]}
+
+    assert list(iter_agent_commits(source, "train")) == [("local", "ai", "TypeScript")]
+
+
+def test_shipped_archives_are_readable_and_licensed():
+    from aicontrib.config import REPO_ROOT, load_config
+
+    source = next(s for s in load_config()["dataset"]["sources"] if s["name"] == "agent_commits")
+    rows = [json.loads(line) for d in source["archive"] for line in
+            __import__("gzip").open(REPO_ROOT / d / "train.jsonl.gz", "rt", encoding="utf-8")]
+    assert rows and {r["label"] for r in rows} == {"human", "ai"}
+    for r in rows:
+        assert (REPO_ROOT / "datasets/agent_commits" / ("copyleft" if r["license"] in ("GPL-3.0", "AGPL-3.0") else "")
+                / "LICENSES" / f"{r['repo'].replace('/', '__')}.txt").exists()
