@@ -19,16 +19,18 @@ from tqdm import tqdm
 
 from aicontrib.config import load_config
 from aicontrib.diff.commit import CommitClassifier, run_git
-from aicontrib.diff.known_repo_eval import evenly_spaced
+from aicontrib.diff.known_repo_eval import date_range_args, evenly_spaced
 
 _TEMPLATE = Path(__file__).resolve().parents[1] / "static" / "timeline.html"
 CLASS_LABELS = {"human": "Human", "co_authored": "Co-authored", "ai": "AI"}
 
 
-def list_commits(repo_path: str) -> list[tuple[str, str]]:
-    """(sha, "YYYY-MM" of the author date), oldest first. Merges are excluded: a
-    merge's diff re-counts code already attributed to its branch's own commits."""
-    out = run_git(repo_path, "log", "--no-merges", "--reverse", "--date=format:%Y-%m", "--format=%H %ad")
+def list_commits(repo_path: str, since=None, until=None) -> list[tuple[str, str]]:
+    """(sha, "YYYY-MM" of the author date), oldest first, optionally only commits in a date range (git's
+    --since/--until: commit date). Merges are excluded: a merge's diff re-counts code already attributed
+    to its branch's own commits."""
+    out = run_git(repo_path, "log", "--no-merges", "--reverse", "--date=format:%Y-%m", "--format=%H %ad",
+                  *date_range_args(since, until))
     return [tuple(line.split(" ", 1)) for line in out.splitlines() if line.strip()]
 
 
@@ -85,13 +87,14 @@ def _cache_path(cfg: dict, repo_path: str, model_digest: str) -> Path:
 
 
 def analyze_repo(
-    repo_path: str, config_path: str | None = None, max_commits: int | None = None, use_cache: bool = True
+    repo_path: str, config_path: str | None = None, max_commits: int | None = None, use_cache: bool = True,
+    since: str | None = None, until: str | None = None,
 ) -> dict:
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
     model_digest = _file_digest(Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt")
 
-    all_commits = list_commits(repo_path)
+    all_commits = list_commits(repo_path, since, until)  # the cache is per commit, so any range can reuse it
     commits = evenly_spaced(all_commits, max_commits) if max_commits else all_commits
 
     cache_path = _cache_path(cfg, repo_path, model_digest)
@@ -132,6 +135,8 @@ def analyze_repo(
         "model": model_digest,
         "class_names": class_names,
         "class_labels": {c: CLASS_LABELS.get(c, c) for c in class_names},
+        "since": str(since) if since else None,
+        "until": str(until) if until else None,
         "n_commits_total": len(all_commits),
         "n_commits_analyzed": len(commits),
         "n_classified": sum(totals.values()),
@@ -154,8 +159,10 @@ def write_report(
     config_path: str | None = None,
     max_commits: int | None = None,
     use_cache: bool = True,
+    since: str | None = None,
+    until: str | None = None,
 ) -> Path:
-    report = analyze_repo(repo_path, config_path, max_commits, use_cache)
+    report = analyze_repo(repo_path, config_path, max_commits, use_cache, since, until)
     out_path = Path(output) if output else Path.cwd() / f"{report['repo']}-authorship-timeline.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(report), encoding="utf-8")

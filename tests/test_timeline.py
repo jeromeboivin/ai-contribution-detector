@@ -107,3 +107,22 @@ def test_rendered_html_embeds_data_without_breaking_script_tag(tmp_path):
     payload = html.split('id="report-data">', 1)[1].split("</script>", 1)[0]
     assert json.loads(payload)["repo"] == report["repo"]
     assert "__REPORT_DATA__" not in html
+
+
+def test_date_range_limits_the_report_and_reuses_the_cache(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    config_path = _config_with_model(tmp_path)
+    monkeypatch.setattr(timeline, "CommitClassifier", _StubClassifier)
+
+    assert [m for _, m in timeline.list_commits(str(repo), since="2023-02-01")] == ["2023-03"]
+
+    _StubClassifier.calls = 0
+    report = timeline.analyze_repo(str(repo), config_path, until="2023-01-31")
+    assert _StubClassifier.calls == 2
+    assert report["n_commits_total"] == 2 and [m["month"] for m in report["months"]] == ["2023-01"]
+    assert (report["since"], report["until"]) == (None, "2023-01-31")
+
+    full = timeline.analyze_repo(str(repo), config_path)
+    assert _StubClassifier.calls == 3  # only the commit outside the first range was new
+    assert full["n_classified"] == 3 and full["since"] is None

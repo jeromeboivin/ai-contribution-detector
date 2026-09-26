@@ -248,6 +248,9 @@
   if (report.n_skipped) noteParts.push(`Excluded: ${commits(report.n_skipped)} touching no supported-language file.`);
   if (report.n_errors) noteParts.push(`Excluded: ${commits(report.n_errors)} that could not be read.`);
   noteParts.push("Merge commits are excluded (their changes are already counted in the merged commits).");
+  if (report.since || report.until) {
+    noteParts.push(`Limited to commits from ${report.since || "the start"} to ${report.until || "now"} (commit date).`);
+  }
   if (report.n_commits_analyzed < report.n_commits_total) {
     noteParts.push(`Sampled ${fmt(report.n_commits_analyzed)} of ${fmt(report.n_commits_total)} commits, evenly across history.`);
   }

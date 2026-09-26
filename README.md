@@ -581,6 +581,16 @@ percentages at the top, hover/keyboard tooltips, and a data table. Output goes t
 `./<repo-name>-authorship-timeline.html` unless you pass `-o/--output some/file.html`. The page shows the
 repo's folder name only, never its full local path.
 
+To analyze part of the history only — faster on a big repository, or to zoom in on the months around an
+AI-tool adoption — pass a date range (git's commit date); the page states it:
+
+```bash
+aicontrib report C:\Users\me\repos\my-project --since 2018-01-01 --until 2022-11-30
+```
+
+Per-commit results are cached, so a later run over a wider range only classifies the commits it hasn't
+seen yet.
+
 What counts:
 
 - **Only commits that change supported code** — `.py`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`,

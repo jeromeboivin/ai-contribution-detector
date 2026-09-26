@@ -181,6 +181,8 @@ def main(argv: list[str] | None = None) -> None:
     report_parser.add_argument(
         "--no-cache", action="store_true", help="Reclassify every commit instead of reusing cached results"
     )
+    report_parser.add_argument("--since", help="Only commits from this date, e.g. 2018-01-01")
+    report_parser.add_argument("--until", help="Only commits up to this date, e.g. 2022-11-30")
 
     args = parser.parse_args(argv)
 
@@ -286,7 +288,8 @@ def main(argv: list[str] | None = None) -> None:
         if not checkpoint.exists():
             sys.exit(f"No trained model at {checkpoint} -- run `prepare`, `embed` and `train` first (see README).")
         try:
-            out = write_report(args.repo_path, args.output, max_commits=args.max_commits, use_cache=not args.no_cache)
+            out = write_report(args.repo_path, args.output, max_commits=args.max_commits, use_cache=not args.no_cache,
+                               since=args.since, until=args.until)
         except subprocess.CalledProcessError as exc:
             sys.exit(f"git failed on {args.repo_path!r}: {exc.stderr.decode('utf-8', 'replace').strip()}")
         print(f"Report written to {out}")
