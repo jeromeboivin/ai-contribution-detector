@@ -64,7 +64,7 @@
 # Optional `since` / `until` (dates, e.g. 2021-12-31) limit an entry to part of the history -- useful
 # for a big repo, or one whose authorship changed over time: list it twice, e.g. a `human` entry
 # with `until: 2021-12-31` and an `ai` entry with `since: 2025-01-01`, under different names.
-# evaluate-repo then samples only commits in the range; binoculars only files created in it.
+# evaluate-repo then samples only commits in the range; evaluate-files only files created in it.
 #
 # Path syntax
 #   Linux / macOS:  path: "/home/me/repos/tslint"

@@ -1,47 +1,13 @@
-import math
 import os
 import subprocess
 
-import pytest
-import torch
+import numpy as np
 
-from aicontrib.binoculars import binoculars_scores, sample_files
+from aicontrib.config import load_config
+from aicontrib.diff import file_eval
 from aicontrib.diff.commit import run_git
+from aicontrib.diff.file_eval import sample_files
 from aicontrib.diff.known_repo_eval import _sample_commit_shas
-
-
-def _reference_score(observer_logits, performer_logits, input_ids):
-    """Unbatched, unchunked, straight from the definition (Hans et al. 2024, Eq. 3-4)."""
-    n = input_ids.shape[0] - 1
-    perf_logp = performer_logits[:n].log_softmax(-1)
-    obs_p = observer_logits[:n].softmax(-1)
-    log_ppl = -perf_logp[torch.arange(n), input_ids[1:]].mean()
-    log_x_ppl = -(obs_p * perf_logp).sum(-1).mean()
-    return (log_ppl / log_x_ppl).item()
-
-
-def test_uniform_models_score_one():
-    # Both models uniform over V tokens: perplexity and cross-perplexity are both log V.
-    logits = torch.zeros(1, 10, 50)
-    ids = torch.randint(0, 50, (1, 10))
-    score = binoculars_scores(logits, logits, ids, torch.ones_like(ids))
-    assert score.item() == pytest.approx(1.0)
-
-
-def test_matches_definition_across_chunks_and_padding():
-    torch.manual_seed(0)
-    vocab, long_len, short_len = 40, 12, 7
-    obs, perf = torch.randn(2, long_len, vocab), torch.randn(2, long_len, vocab)
-    ids = torch.randint(0, vocab, (2, long_len))
-    mask = torch.ones_like(ids)
-    mask[1, short_len:] = 0  # second sequence right-padded
-
-    scores = binoculars_scores(obs, perf, ids, mask, chunk=5)  # chunk boundaries fall mid-sequence
-
-    assert scores[0].item() == pytest.approx(_reference_score(obs[0], perf[0], ids[0]), rel=1e-5)
-    assert scores[1].item() == pytest.approx(
-        _reference_score(obs[1, :short_len], perf[1, :short_len], ids[1, :short_len]), rel=1e-5)
-    assert all(math.isfinite(s) for s in scores.tolist())
 
 
 def test_sample_files_filters_extensions_and_excluded_paths(tmp_path):
@@ -112,3 +78,47 @@ def test_evaluate_repo_commit_sampling_respects_the_date_range(tmp_path):
 
     messages = [run_git(str(repo), "log", "-1", "--format=%s", sha).strip() for sha in shas]
     assert sorted(messages) == ["created in range", "deleted in range"]
+
+
+class _StubClassifier:
+    """P(ai) = 0.9 for files containing "ai", else 0.2; a whitespace "tokenizer"."""
+    class_names = ["human", "ai"]
+
+    class embedder:
+        @staticmethod
+        def tokenizer(text, truncation, max_length):
+            return {"input_ids": text.split()[:max_length]}
+
+    def _probabilities(self, texts):
+        return np.array([[0.1, 0.9] if "ai" in t.split() else [0.8, 0.2] for t in texts])
+
+
+def _repo_with(tmp_path, name, files):
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    for rel, text in files.items():
+        (repo / rel).write_text(text)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    _dated_commit(repo, "2020-01-01", "init")
+    return repo
+
+
+def test_evaluate_files_scores_repos_and_pairs(tmp_path, monkeypatch):
+    monkeypatch.setattr(file_eval, "CommitClassifier", lambda: _StubClassifier())
+    words = " x" * 70
+    human = _repo_with(tmp_path, "h", {"a.ts": "human" + words, "b.ts": "human" + words, "tiny.ts": "ai"})
+    ai = _repo_with(tmp_path, "a", {"c.ts": "ai" + words, "d.ts": "human" + words})
+    cfg = load_config()
+    cfg["paths"]["models_dir"] = str(tmp_path / "models")
+    cfg["known_repos"] = [{"name": "H", "path": str(human), "expected_class": "human"},
+                          {"name": "A", "path": str(ai), "expected_class": "ai"}]
+
+    result = file_eval.evaluate_files(cfg, log=lambda _: None)
+
+    h, a = result["repos"]
+    assert len(h["files"]) == 2 and h["n_files_too_short"] == 1  # tiny.ts: under min_tokens
+    assert h["mean_p_ai"] == 0.2 and h["share_called_ai"] == 0.0
+    assert a["mean_p_ai"] == 0.55 and a["share_called_ai"] == 0.5
+    assert result["pairs"] == [{"human": "H", "ai": "A", "auc": 0.75}]
+    assert (tmp_path / "models" / "file_eval_results.json").exists()

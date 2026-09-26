@@ -405,7 +405,7 @@ Caveats: a signature proves an agent took part, not that it wrote every line (a 
 the diff); unsigned 2024+ commits are never used, as they may be AI-written too. And **time is
 confounded with the label**: human rows are ~2016–2021 code, AI rows 2024–2026 code, so the model could
 partly learn "recent" instead of "AI" — newer frameworks, language features and dependencies. Your own
-known repos (`evaluate-repo`, `binoculars`) remain the check for that. The code belongs to each
+known repos (`evaluate-repo`, `evaluate-files`) remain the check for that. The code belongs to each
 repository's authors under its own license: a local build contains code whose licenses don't allow
 redistribution, so don't publish it — the archive in the repo holds only the redistributable part.
 
@@ -685,7 +685,7 @@ known_repos:
 **Date ranges:** an entry can take `since` and/or `until` (e.g. `until: 2021-12-31`) to use only part of
 the history — for a huge repo, or one whose authorship changed over time. List the same repo twice under
 different names to compare its eras, e.g. `human` with `until: 2021-12-31` and `ai` with
-`since: 2025-01-01`. `evaluate-repo` then samples only commits in the range; `binoculars` only files
+`since: 2025-01-01`. `evaluate-repo` then samples only commits in the range; `evaluate-files` only files
 *created* by commits in the range, read as they were at its end, so later edits don't leak in. With an
 explicit path, `evaluate-repo` takes `--since` / `--until` instead.
 
@@ -704,28 +704,22 @@ The automated `pytest` suite only checks the `evaluate-repo` plumbing against a 
 (`tests/test_known_repo_eval.py`) — it doesn't depend on `configs/local.yaml` or any specific machine's
 paths.
 
-### Zero-shot prototype: Binoculars
+### File-level comparison of known repos
 
 ```bash
-aicontrib binoculars
+aicontrib evaluate-files
 ```
 
-An experiment, not part of the main pipeline. [Binoculars](https://arxiv.org/abs/2401.12070) needs no
-training data. Two small code models read each file: a base model and its instruction-tuned version
-(by default Qwen2.5-Coder-0.5B and -Instruct, ~1 GB each, downloaded on first run; they fit a 4 GB GPU).
-Its score compares how surprising the code is to one model with how surprising the other model's
-predictions are to it. AI-generated code scores **lower**. The TypeScript gap and the older AI models in
-the training data don't apply to it the same way, so it tests whether any signal exists on your repos.
+Scores whole files of every `known_repos` entry with the trained model: up to 200 per entry
+(`file_eval.files_per_repo`), at HEAD — or, for an entry with a date range, the files *created* within it
+(see *Date ranges* above) — skipping vendored and generated paths (`file_eval.exclude`) and files under 64
+tokens. It prints, per entry, the mean P(ai) and the share of files called AI, and for every pair of a
+`human` and an `ai` entry the **AUC**: the chance that a random file of the AI repo gets a higher P(ai) than a
+random file of the human repo (0.5 = no signal, 1.0 = perfect). The AUC needs no threshold, so it measures
+separation even when the probabilities are off-scale. Per-file results go to `models/file_eval_results.json`.
 
-It samples up to 200 whole files from each `known_repos` entry — at HEAD, or for an entry with a date
-range, files created within it (see *Date ranges* above) — skipping vendored and generated
-paths (`binoculars.exclude` in the config) and files under 64 tokens. It prints each repo's score
-distribution and, for every human/AI pair of repos, the **AUC**: the chance that a random file from the
-AI repo looks more AI-like than a random file from the human repo (0.5 = no signal, 1.0 = perfect). If a
-trained MLP exists, its AUC on the same files is printed next to it, so the two are compared on equal
-terms. Per-file scores go to `models/binoculars_results.json`.
-
-The paper's fixed threshold was fitted for other models and doesn't carry over; the AUC doesn't need one.
+Yearly entries of one human repository (`since`/`until` per year) are a good check that the model detects
+AI rather than recent code: their mean P(ai) should stay flat from year to year.
 
 ## Generalization to unseen AI models
 

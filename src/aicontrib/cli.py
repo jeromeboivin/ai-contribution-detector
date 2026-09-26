@@ -65,27 +65,25 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         print()
 
 
-def _print_binoculars(result: dict) -> None:
-    print(f"\nBinoculars ({result['observer']} / {result['performer']}), whole files at HEAD. "
-          "Lower score = more AI-like.")
-    has_mlp = any(r["mlp_mean_p_ai"] is not None for r in result["repos"])
+def _print_file_eval(result: dict) -> None:
+    print("\nThe trained classifier on whole files of your known repositories:")
     for r in result["repos"]:
         if r.get("since") or r.get("until"):
             print(f"  {r['name']}: files created from {r.get('since') or 'the start'} to {r.get('until') or 'now'}")
-    print(f"{'repo':<24}{'expected':<13}{'files':>6}{'score p25':>11}{'median':>9}{'p75':>9}"
-          + (f"{'MLP mean P(ai)':>17}" if has_mlp else ""))
+    print(f"{'repo':<24}{'expected':<13}{'files':>6}{'mean P(ai)':>12}{'called AI':>11}")
     for r in result["repos"]:
-        q = r["binoculars_quartiles"] or [float("nan")] * 3
-        mlp = f"{r['mlp_mean_p_ai']:>17.3f}" if r["mlp_mean_p_ai"] is not None else ""
-        print(f"{r['name']:<24}{r['expected_class']:<13}{len(r['files']):>6}{q[0]:>11.3f}{q[1]:>9.3f}{q[2]:>9.3f}{mlp}")
+        if r["files"]:
+            print(f"{r['name']:<24}{r['expected_class']:<13}{len(r['files']):>6}{r['mean_p_ai']:>12.3f}"
+                  f"{r['share_called_ai']:>10.0%}")
+        else:
+            print(f"{r['name']:<24}{r['expected_class']:<13}{0:>6}  (no files to score)")
     if not result["pairs"]:
         print("\nNo AUC: known_repos needs at least one `human` and one `ai` repo.")
     else:
-        print("\nSeparation, file level (AUC: 0.5 = no signal, 1.0 = every AI file ranks above every human file):")
+        print("\nSeparation (AUC: chance that a random AI file scores above a random human file; 0.5 = no signal):")
         for pair in result["pairs"]:
-            mlp = f", MLP classifier {pair['mlp_auc']:.3f}" if "mlp_auc" in pair else ""
-            print(f"  {pair['human']} (human) vs {pair['ai']} (ai): Binoculars {pair['binoculars_auc']:.3f}{mlp}")
-    print(f"\nPer-file scores: {result['results_path']}")
+            print(f"  {pair['human']} (human) vs {pair['ai']} (ai): {pair['auc']:.3f}")
+    print(f"\nPer-file results: {result['results_path']}")
 
 
 def _print_generator_holdout(summary: dict) -> None:
@@ -160,12 +158,12 @@ def main(argv: list[str] | None = None) -> None:
         "generator-holdout",
         help="How well the classifier catches code from AI models it never saw in training (CodeMirage)",
     )
-    binoculars_parser = subparsers.add_parser(
-        "binoculars",
-        help="(Prototype) Zero-shot Binoculars detector: how well it separates your known_repos, vs the MLP",
+    files_parser = subparsers.add_parser(
+        "evaluate-files",
+        help="Score whole files of every known_repos entry and compare human vs AI repos (AUC)",
     )
-    binoculars_parser.add_argument(
-        "--files", type=int, help="Files to sample per repo (default: binoculars.files_per_repo in the config)"
+    files_parser.add_argument(
+        "--files", type=int, help="Files to sample per repo (default: file_eval.files_per_repo in the config)"
     )
 
     report_parser = subparsers.add_parser(
@@ -269,14 +267,18 @@ def main(argv: list[str] | None = None) -> None:
         from aicontrib.model.generator_holdout import run_generator_holdout
 
         _print_generator_holdout(run_generator_holdout(load_config()))
-    elif args.command == "binoculars":
-        from aicontrib.binoculars import evaluate_binoculars
+    elif args.command == "evaluate-files":
+        from pathlib import Path
+
         from aicontrib.config import load_config
+        from aicontrib.diff.file_eval import evaluate_files
 
         cfg = load_config()
         if not cfg.get("known_repos"):
             sys.exit("No known_repos configured -- add them to configs/local.yaml (see README 'Real-world validation').")
-        _print_binoculars(evaluate_binoculars(cfg, files_per_repo=args.files))
+        if not (Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt").exists():
+            sys.exit("No trained model -- run `prepare`, `embed` and `train` first (see README).")
+        _print_file_eval(evaluate_files(cfg, files_per_repo=args.files))
     elif args.command == "report":
         import subprocess
         from pathlib import Path
