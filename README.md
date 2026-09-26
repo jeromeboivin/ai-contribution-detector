@@ -344,12 +344,11 @@ AIGCodeSet). TypeScript comes from a third source you build yourself:
 
 ### Real-repository data: agent-signed commits
 
-**It's already in the repo.** `datasets/agent_commits/` holds a build (September 2026) of the 51 repositories
-whose licenses allow redistribution: 5,438 rows per class, permissive licenses in the folder itself and
-GPL/AGPL rows in `copyleft/`, each with its license texts — see [CREDITS.md](CREDITS.md). `prepare` reads
-these gzipped files directly when there's no local build, so nothing needs to be run or unpacked. To build
-it yourself instead — all qualifying repositories, including the 16 whose licenses don't allow
-redistribution (the local build then takes precedence):
+**It's already in the repo.** `datasets/agent_commits/` holds a build (September 2026) from 51 repositories:
+10,605 rows per class (train 8,425 · validation 753 · test 1,427), permissive licenses in the folder itself
+and GPL/AGPL rows in `copyleft/`, each with its license texts — see [CREDITS.md](CREDITS.md). `prepare`
+reads these gzipped files directly when there's no local build, so nothing needs to be run or unpacked. To
+build it yourself instead (a few hours; the local build then takes precedence):
 
 ```bash
 aicontrib build-agent-commits                 # 185 repositories, about an hour; try --max-repos 3 first
@@ -373,9 +372,14 @@ code, so each repository is cloned — *blobless*: history without file contents
 per selected commit. Settings are under `agent_commits:` in `configs/default.yaml`; by default every
 TypeScript repo with 20+ signed commits (185), `.ts`/`.tsx`/`.mts`/`.cts` files, 5+ changed lines.
 
-- **Paired per repository.** A repository contributes as many human rows as AI rows (up to 150 each),
-  or nothing — repositories created after mid-2021 have no human side and are skipped. So a repository's
-  style can't give its label away.
+- **Licenses checked first.** Each repository's license is looked up on GitHub before anything is cloned;
+  only licenses that let the rows be redistributed (permissive, or GPL/AGPL) are processed
+  (`redistributable_only`, `licenses`). Set `GITHUB_TOKEN` or install the `gh` CLI: anonymous lookups are
+  limited to 60 per hour.
+- **Paired per repository.** A repository contributes as many human rows as AI rows (up to 500 each), or
+  nothing — repositories created after mid-2021 have no human side and are skipped. So a repository's
+  style can't give its label away. No repository may exceed 5% of all rows (`max_repo_share`), so a few
+  big ones can't dominate.
 - **Size-matched.** Agents write bigger changes (twice as many changed lines, in a trial), which the model
   could learn instead of authorship. Each AI row is paired with a human row of similar size from the same
   repository, drawn from 3× more human candidates than needed.

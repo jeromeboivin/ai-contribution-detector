@@ -13,7 +13,7 @@ dataset:
   sources:
     # Real-repository commits signed by coding agents vs pre-2021 human commits, TypeScript (see README).
     # A local build (`aicontrib build-agent-commits`) in `path` is used if present, else the gzipped
-    # archives shipped in the repo (51 repositories; see CREDITS.md). Listed first: sources are pulled in
+    # archives shipped in the repo (51 repositories, 10,605 rows per class; see CREDITS.md). Listed first: sources are pulled in
     # order until the caps are reached (see dataset.balance_languages).
     - name: agent_commits
       enabled: true
