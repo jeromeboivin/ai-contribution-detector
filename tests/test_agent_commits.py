@@ -159,3 +159,51 @@ def test_shipped_archives_are_readable_and_licensed():
     for r in rows:
         assert (REPO_ROOT / "datasets/agent_commits" / ("copyleft" if r["license"] in ("GPL-3.0", "AGPL-3.0") else "")
                 / "LICENSES" / f"{r['repo'].replace('/', '__')}.txt").exists()
+
+
+def test_license_groups():
+    acfg = load_config()["agent_commits"]
+    assert ac.license_group("MIT", acfg) == "permissive"
+    assert ac.license_group("AGPL-3.0", acfg) == "copyleft"
+    assert ac.license_group("NOASSERTION", acfg) is None  # custom / source-available terms
+    assert ac.license_group(None, acfg) is None  # no license: all rights reserved
+
+
+def test_cap_repo_shares():
+    counts = {"big": 500, **{f"r{i}": 100 for i in range(19)}}
+    kept = ac.cap_repo_shares(counts, 0.05)
+    total = sum(kept.values())
+    assert kept["big"] < 500 and max(kept.values()) <= 0.05 * total + 1
+    assert all(kept[f"r{i}"] == 100 for i in range(19))  # small repositories untouched
+    assert ac.cap_repo_shares({"a": 500, "b": 10}, 0.05) == {"a": 500, "b": 10}  # unreachable with 2 repos
+
+
+def test_reuse_depends_on_the_settings_a_result_was_built_with():
+    acfg = _acfg()
+    settings = {k: acfg[k] for k in ac._ROW_SETTINGS}
+    assert ac._reusable({"settings": settings, "rows_per_class": 10}, acfg)
+    assert not ac._reusable({"settings": {**settings, "rows_per_class_per_repo": 150}, "rows_per_class": 10}, acfg)
+    assert not ac._reusable({"rows_per_class": 150}, acfg)  # older result, unknown settings
+    # A repository without early history stays skipped whatever the row settings.
+    assert ac._reusable({"skipped": f"no commits before {acfg['human_until']}"}, acfg)
+    assert not ac._reusable({"skipped": "no commits before 2020-01-01"}, acfg)
+
+
+def test_build_skips_repositories_it_could_not_redistribute(tmp_path, repo, monkeypatch):
+    cfg = load_config()
+    cfg["agent_commits"] = {**_acfg(), "clone_dir": str(tmp_path / "clones"), "out_dir": str(tmp_path / "out"),
+                            "workers": 1, "max_repo_share": None}
+    monkeypatch.setattr(ac, "select_repos", lambda acfg: [{"repo": "free/repo", "github_url": str(repo)},
+                                                          {"repo": "closed/repo", "github_url": str(repo)}])
+    monkeypatch.setattr(ac, "github_license", lambda name: "MIT" if name == "free/repo" else "NOASSERTION")
+    cloned = []
+    real_clone = ac._clone
+    monkeypatch.setattr(ac, "_clone", lambda url, dest: cloned.append(dest.name) or real_clone(url, dest))
+
+    summary = ac.build_agent_commits(cfg, log=lambda _: None)
+
+    assert cloned == ["free__repo"]  # the other one is never cloned
+    split = ac.split_of("free/repo", cfg["agent_commits"])
+    rows = [json.loads(line) for line in open(tmp_path / "out" / f"{split}.jsonl")]
+    assert summary[split]["repos"] == 1 and {r["license"] for r in rows} == {"MIT"}
+    assert not (tmp_path / "clones" / "free__repo").exists()  # removed once its rows were extracted

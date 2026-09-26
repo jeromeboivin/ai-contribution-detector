@@ -151,6 +151,12 @@ agent_commits:
   repo_languages: [TypeScript]  # GitHub's primary language of the repository, as the index records it
   min_signed_commits: 20        # repositories with fewer agent-signed commits are skipped
   max_repos: null               # null: all that qualify (185 TypeScript repos); most agent-active first
+  # Only repositories whose license lets the extracted rows be redistributed are processed (GitHub's SPDX
+  # id; checked before cloning). Other licenses -- none, or custom / source-available -- are skipped.
+  redistributable_only: true
+  licenses:
+    permissive: [MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, 0BSD, Unlicense, CC0-1.0, CC-BY-4.0]
+    copyleft: [GPL-3.0, AGPL-3.0]  # shipped apart from the permissive rows (datasets/agent_commits/copyleft)
   keep_clones: false            # delete each clone once its rows are extracted (they'd add up to many GB)
   ai_since: "2024-01-01"        # agent-signed commits from this date
   human_until: "2021-06-01"     # human commits before this date (GitHub Copilot's preview: June 2021)
@@ -159,7 +165,8 @@ agent_commits:
             "*.d.ts", "*.generated.*", "*.gen.ts", "__generated__/*", "*/__generated__/*"]
   min_changed_lines: 5          # smaller file changes carry too little signal
   max_files_per_commit: 5       # the largest changes, so one huge commit can't dominate a repository
-  rows_per_class_per_repo: 150  # each repository gives as many human rows as AI rows, up to this
+  rows_per_class_per_repo: 500  # each repository gives as many human rows as AI rows, up to this...
+  max_repo_share: 0.05          # ...and at most this share of all rows, so a few big repositories can't dominate
   human_pool_factor: 3          # human candidates per AI row, to pair each AI row with one of similar size
   split_percent: {validation: 10, test: 15}  # of repositories: a repository is in one split only
   workers: 4                    # repositories processed in parallel

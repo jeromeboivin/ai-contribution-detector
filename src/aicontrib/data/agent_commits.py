@@ -32,6 +32,7 @@ import re
 import shutil
 import stat
 import subprocess
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -213,6 +214,81 @@ def split_of(repo_name: str, acfg: dict) -> str:
     return "train"
 
 
+# ---- Licenses: only process what can be kept ----
+
+def license_group(spdx: str | None, acfg: dict) -> str | None:
+    """"permissive", "copyleft", or None when the license doesn't let the extracted rows be redistributed
+    (no license, or custom / source-available terms: GitHub reports those as NOASSERTION)."""
+    for group, ids in (acfg.get("licenses") or {}).items():
+        if spdx in (ids or []):
+            return group
+    return None
+
+
+def github_license(repo: str) -> str | None:
+    """The repository's SPDX license id according to GitHub. Uses GITHUB_TOKEN / GH_TOKEN, else the `gh`
+    CLI if installed, else anonymous requests (limited to 60 per hour)."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token and shutil.which("gh"):
+        result = subprocess.run(["gh", "api", f"repos/{repo}", "--jq", '.license.spdx_id // ""'],
+                                capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    headers = {"Accept": "application/vnd.github+json", **({"Authorization": f"Bearer {token}"} if token else {})}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"https://api.github.com/repos/{repo}", headers=headers),
+                                    timeout=30) as response:
+            return (json.load(response).get("license") or {}).get("spdx_id")
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Can't read the license of {repo} from GitHub ({exc}). Anonymous requests are limited "
+                           "to 60 per hour: set GITHUB_TOKEN or install the gh CLI, or re-run later.") from exc
+
+
+def fetch_licenses(repos: list[str], cache_path: Path, log: Callable[[str], None] = print) -> dict[str, str | None]:
+    cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+    missing = [r for r in repos if r not in cache]
+    if missing:
+        log(f"Checking the license of {len(missing)} repositories on GitHub...")
+    try:
+        for repo in missing:
+            cache[repo] = github_license(repo)
+    finally:
+        cache_path.write_text(json.dumps(cache, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return {r: cache[r] for r in repos}
+
+
+# ---- Reusing earlier results ----
+
+# The settings that decide which rows a repository gives. Saved with each result; a result built with other
+# settings is redone.
+_ROW_SETTINGS = ("ai_since", "human_until", "extensions", "exclude", "min_changed_lines", "max_files_per_commit",
+                 "rows_per_class_per_repo", "human_pool_factor")
+
+
+def _reusable(stats: dict, acfg: dict) -> bool:
+    if stats.get("settings") == {k: acfg[k] for k in _ROW_SETTINGS}:
+        return True
+    # "No agent-signed commits" and "no early history" depend only on the dates, which the message records
+    # (older results have no saved settings; ai_since was 2024-01-01 in all of them).
+    ai_since = (stats.get("settings") or {}).get("ai_since", "2024-01-01")
+    return ai_since == acfg["ai_since"] and stats.get("skipped") in (
+        "no signed commits", f"no commits before {acfg['human_until']}")
+
+
+def cap_repo_shares(rows_per_repo: dict[str, int], max_share: float | None) -> dict[str, int]:
+    """Rows per class to keep per repository so that none exceeds max_share of the total (computed after
+    the cap). With too few repositories for the cap to be reachable, nothing is capped."""
+    if not max_share or len(rows_per_repo) * max_share < 1:
+        return dict(rows_per_repo)
+    limit = max(rows_per_repo.values())
+    while True:  # the limit only decreases, so this converges
+        new = max(1, int(max_share * sum(min(n, limit) for n in rows_per_repo.values())))
+        if new >= limit:
+            break
+        limit = new
+    return {repo: min(n, limit) for repo, n in rows_per_repo.items()}
+
+
 # ---- Building the whole dataset ----
 
 def select_repos(acfg: dict) -> list[dict]:
@@ -264,16 +340,27 @@ def build_agent_commits(cfg: dict, max_repos: int | None = None, log: Callable[[
     repos = select_repos(acfg)
     log(f"{len(repos)} repositories selected from the index ({', '.join(acfg['repo_languages'])}, "
         f"{acfg['min_signed_commits']}+ signed commits)")
+    licenses = fetch_licenses([e["repo"] for e in repos], out_dir / "licenses.json", log)
+    if acfg.get("redistributable_only"):
+        keep = [e for e in repos if license_group(licenses[e["repo"]], acfg)]
+        log(f"{len(keep)} of them under a license that lets the result be redistributed; the others are skipped")
+        repos = keep
+    settings = {k: acfg[k] for k in _ROW_SETTINGS}
 
     def process(entry: dict) -> dict:
         name = entry["repo"]
         slug = name.replace("/", "__")
         done = per_repo_dir / f"{slug}.json"
-        if done.exists():  # resume: each finished repo is saved on its own
-            return json.loads(done.read_text(encoding="utf-8"))["stats"]
+        if done.exists():  # resume: each finished repo is saved on its own, with the settings it was built with
+            saved = json.loads(done.read_text(encoding="utf-8"))["stats"]
+            if _reusable(saved, acfg):
+                return {**saved, "license": licenses[name]}
         try:
             _clone(entry["github_url"], clone_dir / slug)
             rows, stats = build_repo_rows(clone_dir / slug, name, acfg)
+            stats.update(settings=settings, license=licenses[name])
+            for row in rows:
+                row["license"] = licenses[name]
             if not acfg.get("keep_clones"):
                 _remove_clone(clone_dir / slug)  # its rows are all we need; big clones add up to many GB
         except subprocess.CalledProcessError as exc:  # not saved: retried on the next run
@@ -295,20 +382,35 @@ def build_agent_commits(cfg: dict, max_repos: int | None = None, log: Callable[[
                        else f"skipped ({stats.get('skipped') or 'error: ' + stats.get('error', '')})")
             log(f"[{i}/{len(repos)}] {stats['repo']}: {outcome}")
 
-    return write_splits(per_repo_dir, out_dir, acfg, [e["repo"] for e in repos], all_stats, log)
+    built = {s["repo"] for s in all_stats if "rows_per_class" in s}
+    return write_splits(per_repo_dir, out_dir, acfg, [e["repo"] for e in repos if e["repo"] in built], all_stats, log,
+                        licenses=licenses)
 
 
 def write_splits(per_repo_dir: Path, out_dir: Path, acfg: dict, repo_names: list[str], all_stats: list[dict],
-                 log: Callable[[str], None] = print) -> dict:
+                 log: Callable[[str], None] = print, licenses: dict | None = None) -> dict:
+    """The rows of repo_names into {train,validation,test}.jsonl, each repository capped to
+    max_repo_share of the total (its best-matched pairs are kept)."""
+    rows_by_repo = {}
+    for name in repo_names:
+        path = per_repo_dir / f"{name.replace('/', '__')}.json"
+        if path.exists():
+            rows_by_repo[name] = json.loads(path.read_text(encoding="utf-8"))["rows"]
+    per_class = {name: len(rows) // 2 for name, rows in rows_by_repo.items()}
+    keep = cap_repo_shares(per_class, acfg.get("max_repo_share"))
+    capped = {name: f"{per_class[name]} -> {keep[name]}" for name in per_class if keep[name] < per_class[name]}
+    if capped:
+        log(f"Capped to {acfg['max_repo_share']:.0%} of the rows each: {capped}")
     counts: dict = {}
     files = {split: open(out_dir / f"{split}.jsonl", "w", encoding="utf-8") for split in ("train", "validation", "test")}
     try:
-        for name in repo_names:
-            path = per_repo_dir / f"{name.replace('/', '__')}.json"
-            if not path.exists():
-                continue
+        for name, rows in rows_by_repo.items():
             split = split_of(name, acfg)
-            for row in json.loads(path.read_text(encoding="utf-8"))["rows"]:
+            n = per_class[name]
+            # Rows are the AI rows then their size-matched human rows, best-matched pairs first.
+            for row in rows[: keep[name]] + rows[n : n + keep[name]]:
+                if licenses and "license" not in row:  # rows of older builds
+                    row = {**row, "license": licenses.get(name)}
                 files[split].write(json.dumps({**row, "split": split}) + "\n")
                 key = (split, row["label"])
                 counts[key] = counts.get(key, 0) + 1
