@@ -158,3 +158,16 @@ def test_balance_languages_needs_an_include_list(tmp_path):
     cfg["dataset"]["balance_languages"] = True
     with pytest.raises(ValueError, match="languages.include"):
         prepare.prepare_split(cfg, "train")
+
+
+def test_default_classes_leave_co_authored_rows_out(tmp_path, monkeypatch):
+    from aicontrib.config import load_config
+
+    monkeypatch.setattr(prepare, "iter_source",
+                        _fake_sources({"a": [("h", "human"), ("c", "co_authored"), ("a1", "ai")]}))
+    cfg = _base_cfg(tmp_path, per_class_cap=None)
+    cfg["classes"] = load_config()["classes"]
+
+    rows = _read_jsonl(prepare.prepare_split(cfg, "train"))
+
+    assert sorted(r["code"] for r in rows) == ["a1", "h"]

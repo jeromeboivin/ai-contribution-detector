@@ -1,8 +1,8 @@
 # ai-contribution-detector
 
 Tells you whether the code in a git repository was **written by a person** or **AI-generated** — commit by
-commit, and as a month-by-month timeline over the repository's history. Code a person wrote together with
-AI counts as human-written (see [Classes](#classes)).
+commit, and as a month-by-month timeline over the repository's history. The model is trained on code that
+is clearly one or the other (see [Classes](#classes)).
 Works on Python, JavaScript/TypeScript, C++ and C# code.
 
 New here? Follow the **[Quick start](#quick-start-windows--nvidia-gpu)** below — no Python knowledge
@@ -258,16 +258,21 @@ the held-out test split.
 ### Classes
 
 The model is **binary: `human` or `ai`**. AICD-Bench also labels *hybrid* code, written by a person and an
-AI together; `classes.remap: {co_authored: human}` counts it as human, so `ai` means "AI-generated", not
-"AI was involved". Why not a third class: the earlier 3-class model's `co_authored` class was its weakest
+AI together (`co_authored`). By default those rows are **left out**: they belong to neither class, so
+labelling them either way would add noise to the training data — `prepare` drops every class that isn't in
+`classes.names`. Why not a third class: the earlier 3-class model's `co_authored` class was its weakest
 (F1 ~0.55 vs ~0.6 for the others), and whether a single file is "co-authored" is hard even to define.
 
-To go back to three classes, set in `configs/local.yaml`:
+Alternatives, in `configs/local.yaml`:
 
 ```yaml
 classes:
-  names: ["human", "co_authored", "ai"]
-  remap: {}
+  remap: {co_authored: human}              # count hybrid code as human ("ai" = fully AI-generated)
+```
+
+```yaml
+classes:
+  names: ["human", "co_authored", "ai"]    # the former 3-class model
 ```
 
 and re-run `prepare`, `embed` and `train`. A checkpoint records its classes, so every command refuses a
@@ -306,7 +311,7 @@ class hits its per-split cap (see `data/prepare.py`):
    | AICD-Bench label | Our class     |
    |---|---|
    | human             | `human`       |
-   | hybrid            | `co_authored`, counted as `human` by default (`classes.remap`, see [Classes](#classes)) |
+   | hybrid            | `co_authored`, left out of the binary model by default (see [Classes](#classes)) |
    | machine           | `ai`          |
    | adversarial       | `ai` (folded in — still AI-authored, just harder to detect) |
 
