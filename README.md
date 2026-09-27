@@ -340,19 +340,34 @@ reintroduce near-duplicate rows the AICD authors deliberately removed, risking t
 
 Both sources cover Python, JavaScript, C++, and C# directly, but not TypeScript — nor does any other
 AI-vs-human code dataset I could find (also checked: HybridCodeAuthorship, MultiAIGCD, HMCorp,
-AIGCodeSet). TypeScript comes from a third source you build yourself:
+AIGCodeSet). And both are benchmark snippets, not commits in real repositories. A third source covers
+all five languages with real commits:
 
 ### Real-repository data: agent-signed commits
 
-**It's already in the repo.** `datasets/agent_commits/` holds a build (September 2026) from 51 repositories:
-10,605 rows per class (train 8,425 · validation 753 · test 1,427), permissive licenses in the folder itself
-and GPL/AGPL rows in `copyleft/`, each with its license texts — see [CREDITS.md](CREDITS.md). `prepare`
-reads these gzipped files directly when there's no local build, so nothing needs to be run or unpacked. To
-build it yourself instead (a few hours; the local build then takes precedence):
+**It's already in the repo.** `datasets/agent_commits/` holds a build (September 2026) from 142 repositories,
+rows per class:
+
+| Language | Repositories | Train | Validation | Test | Total |
+|---|---:|---:|---:|---:|---:|
+| TypeScript | 51 | 8,425 | 753 | 1,427 | 10,605 |
+| Python | 35 | 6,455 | 980 | 265 | 7,700 |
+| C# | 12 | 1,199 | 244 | 22 | 1,465 |
+| JavaScript | 21 | 1,227 | 36 | 136 | 1,399 |
+| C++ | 23 | 1,063 | 146 | 56 | 1,265 |
+
+Permissive licenses are in the folder itself and copyleft ones (GPL, LGPL, AGPL, MPL) in `copyleft/`, each
+with its license texts — see [CREDITS.md](CREDITS.md). `prepare` reads these gzipped files directly when
+there's no local build, so nothing needs to be run or unpacked. To build it yourself instead (several
+hours; the local build then takes precedence):
 
 ```bash
-aicontrib build-agent-commits                 # 185 repositories, about an hour; try --max-repos 3 first
+aicontrib build-agent-commits                 # 442 repositories; try --max-repos 3 (per language) first
 ```
+
+The index has far fewer agent-active repositories in JavaScript, C++ and C# than in TypeScript and Python,
+and many of them were created after mid-2021, so they have no human side. Hence the smaller counts; the
+validation and test splits of those languages hold only a few repositories.
 
 Benchmark snippets don't look like code in real repositories, and that gap dominates the errors on real
 repos. This source is real repository code, one row per file changed in a commit — exactly the text
@@ -367,31 +382,36 @@ repos. This source is real repository code, one row per file changed in a commit
   dependency bots.
 
 The repositories come from the [qmmit agent-commit index](https://huggingface.co/datasets/balrampandey/qmmit-open-source-agent-commit-index):
-2,000 popular GitHub repos with their share of agent-signed commits (371 TypeScript). The index has no
+2,000 popular GitHub repos with their main language and share of agent-signed commits. The index has no
 code, so each repository is cloned — *blobless*: history without file contents, which are downloaded
-per selected commit. Settings are under `agent_commits:` in `configs/default.yaml`; by default every
-TypeScript repo with 20+ signed commits (185), `.ts`/`.tsx`/`.mts`/`.cts` files, 5+ changed lines.
+per selected commit. Settings are under `agent_commits:` in `configs/default.yaml`. A repository gives rows
+in its main language only (`agent_commits.languages`: TypeScript, JavaScript, Python, C++, C#, each with its
+file extensions and its own generated-code exclusions), from file changes of 5+ lines. By default every
+repository with 20+ signed commits — 5+ for C++ and C#, which have few, and up to 1,500 rows per class from
+each instead of 500.
 
 - **Licenses checked first.** Each repository's license is looked up on GitHub before anything is cloned;
-  only licenses that let the rows be redistributed (permissive, or GPL/AGPL) are processed
+  only licenses that let the rows be redistributed (permissive, or GPL/LGPL/AGPL/MPL) are processed
   (`redistributable_only`, `licenses`). Set `GITHUB_TOKEN` or install the `gh` CLI: anonymous lookups are
   limited to 60 per hour.
 - **Paired per repository.** A repository contributes as many human rows as AI rows (up to 500 each), or
   nothing — repositories created after mid-2021 have no human side and are skipped. So a repository's
-  style can't give its label away. No repository may exceed 5% of all rows (`max_repo_share`), so a few
-  big ones can't dominate.
+  style can't give its label away. No repository may exceed 5% of its language's rows (`max_repo_share`),
+  so a few big ones can't dominate — or twice an equal share, for a language with fewer than 40
+  repositories (5% is out of reach below 20). A language can set its own `max_repo_share`.
 - **Size-matched.** Agents write bigger changes (twice as many changed lines, in a trial), which the model
   could learn instead of authorship. Each AI row is paired with a human row of similar size from the same
   repository, drawn from 3× more human candidates than needed.
 - **Split by repository** (75/10/15%): the test split measures repositories the model never saw.
-- **React**: every row records whether it's React code (`.tsx`, or imports `react`); `summary.json` counts them.
+- **React**: every TypeScript and JavaScript row records whether it's React code (`.tsx`/`.jsx`, or imports
+  `react`); `summary.json` counts them, and the rows per language.
 - **Resumable**: each finished repository is saved under `data/agent_commits/repos/`; re-running skips it.
   Each clone is deleted once its rows are extracted (`keep_clones: true` keeps them), so disk use stays at
   a few clones at a time.
 
-Then add `TypeScript` to `dataset.languages` and run `prepare`, `embed`, `train`. `prepare` takes this
-source first, so with a large build TypeScript would crowd out the other languages; to give every language
-the same share of each class, set:
+Then run `prepare`, `embed`, `train` (add `TypeScript` to `dataset.languages` if you filter languages).
+`prepare` takes this source first, then fills up with the benchmark sources; to give every language the same
+share of each class, set:
 
 ```yaml
 dataset:

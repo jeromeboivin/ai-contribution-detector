@@ -137,25 +137,45 @@ generator_holdout:
 agent_commits:
   index_repo: "balrampandey/qmmit-open-source-agent-commit-index"  # repo list; the code is cloned from GitHub
   index_revision: "a5ae0357a23b617d60e194950cdd18a295ab4c80"
-  repo_languages: [TypeScript]  # GitHub's primary language of the repository, as the index records it
+  # The index records each repository's main language (GitHub's). A repository gives rows in that language
+  # only: changes to files with its `extensions`. A language can add its own `exclude` patterns (added to
+  # the shared ones below) and override any other setting of this section, e.g. min_signed_commits.
+  languages:
+    TypeScript: {extensions: [.ts, .tsx, .mts, .cts]}
+    JavaScript: {extensions: [.js, .jsx, .mjs, .cjs]}
+    Python:
+      extensions: [.py]
+      exclude: ["*_pb2.py", "*_pb2_grpc.py", "migrations/*", "*/migrations/*"]
+    C++:
+      extensions: [.cpp, .cc, .cxx, .h, .hpp]
+      exclude: ["third_party/*", "*/third_party/*", "3rdparty/*", "*/3rdparty/*", "external/*", "*/external/*",
+                "extern/*", "*/extern/*", "*.pb.h", "*.pb.cc"]
+      min_signed_commits: 5         # few C++ repositories in the index: take the less agent-active ones too...
+      rows_per_class_per_repo: 1500 # ...and more rows from each
+    C#:
+      extensions: [.cs]
+      exclude: ["*.Designer.cs", "*.g.cs", "*.g.i.cs", "Migrations/*", "*/Migrations/*", "*AssemblyInfo.cs"]
+      min_signed_commits: 5
+      rows_per_class_per_repo: 1500
   min_signed_commits: 20        # repositories with fewer agent-signed commits are skipped
-  max_repos: null               # null: all that qualify (185 TypeScript repos); most agent-active first
+  max_repos: null               # per language; null: all that qualify, most agent-active first
   # Only repositories whose license lets the extracted rows be redistributed are processed (GitHub's SPDX
   # id; checked before cloning). Other licenses -- none, or custom / source-available -- are skipped.
   redistributable_only: true
   licenses:
-    permissive: [MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, 0BSD, Unlicense, CC0-1.0, CC-BY-4.0]
-    copyleft: [GPL-3.0, AGPL-3.0]  # shipped apart from the permissive rows (datasets/agent_commits/copyleft)
+    permissive: [MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, 0BSD, Unlicense, CC0-1.0, CC-BY-4.0,
+                 BSL-1.0]
+    # Shipped apart from the permissive rows (datasets/agent_commits/copyleft), with their license texts.
+    copyleft: [GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.1, LGPL-3.0, MPL-2.0]
   keep_clones: false            # delete each clone once its rows are extracted (they'd add up to many GB)
   ai_since: "2024-01-01"        # agent-signed commits from this date
   human_until: "2021-06-01"     # human commits before this date (GitHub Copilot's preview: June 2021)
-  extensions: [.ts, .tsx, .mts, .cts]
   exclude: ["vendor/*", "*/vendor/*", "node_modules/*", "*/node_modules/*", "dist/*", "build/*", "*.min.js",
             "*.d.ts", "*.generated.*", "*.gen.ts", "__generated__/*", "*/__generated__/*"]
   min_changed_lines: 5          # smaller file changes carry too little signal
   max_files_per_commit: 5       # the largest changes, so one huge commit can't dominate a repository
   rows_per_class_per_repo: 500  # each repository gives as many human rows as AI rows, up to this...
-  max_repo_share: 0.05          # ...and at most this share of all rows, so a few big repositories can't dominate
+  max_repo_share: 0.05          # ...and at most this share of its language's rows, so a few big repositories can't dominate
   human_pool_factor: 3          # human candidates per AI row, to pair each AI row with one of similar size
   split_percent: {validation: 10, test: 15}  # of repositories: a repository is in one split only
   workers: 4                    # repositories processed in parallel

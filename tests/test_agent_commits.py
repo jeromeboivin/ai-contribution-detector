@@ -46,7 +46,9 @@ def repo(tmp_path):
 
 
 def _acfg():
-    return {**load_config()["agent_commits"], "rows_per_class_per_repo": 10, "min_changed_lines": 5}
+    """The TypeScript settings, with small limits."""
+    return {**ac.language_settings(load_config()["agent_commits"], "TypeScript"),
+            "rows_per_class_per_repo": 10, "min_changed_lines": 5}
 
 
 def test_signature_rules():
@@ -94,7 +96,8 @@ def test_splits_are_by_repository_and_readable_by_prepare(tmp_path, repo):
     summary = ac.write_splits(per_repo, tmp_path / "out", acfg, ["owner/repo"], [stats], log=lambda _: None)
 
     split = ac.split_of("owner/repo", acfg)
-    assert summary[split] == {"repos": 1, "human": 2, "ai": 2, "react": 1}
+    assert summary[split] == {"repos": 1, "human": 2, "ai": 2, "react": 1,
+                              "by_language": {"TypeScript": {"repos": 1, "human": 2, "ai": 2}}}
     read = list(iter_agent_commits({"name": "agent_commits", "path": str(tmp_path / "out")}, split))
     assert sorted(label for _, label, _ in read) == ["ai", "ai", "human", "human"]
     assert {lang for _, _, lang in read} == {"TypeScript"}
@@ -156,8 +159,10 @@ def test_shipped_archives_are_readable_and_licensed():
     rows = [json.loads(line) for d in source["archive"] for line in
             __import__("gzip").open(REPO_ROOT / d / "train.jsonl.gz", "rt", encoding="utf-8")]
     assert rows and {r["label"] for r in rows} == {"human", "ai"}
+    copyleft_licenses = load_config()["agent_commits"]["licenses"]["copyleft"]
     for r in rows:
-        assert (REPO_ROOT / "datasets/agent_commits" / ("copyleft" if r["license"] in ("GPL-3.0", "AGPL-3.0") else "")
+        copyleft = r["license"] in copyleft_licenses
+        assert (REPO_ROOT / "datasets/agent_commits" / ("copyleft" if copyleft else "")
                 / "LICENSES" / f"{r['repo'].replace('/', '__')}.txt").exists()
 
 
@@ -191,10 +196,11 @@ def test_reuse_depends_on_the_settings_a_result_was_built_with():
 
 def test_build_skips_repositories_it_could_not_redistribute(tmp_path, repo, monkeypatch):
     cfg = load_config()
-    cfg["agent_commits"] = {**_acfg(), "clone_dir": str(tmp_path / "clones"), "out_dir": str(tmp_path / "out"),
+    cfg["agent_commits"] = {**cfg["agent_commits"], "rows_per_class_per_repo": 10, "clone_dir": str(tmp_path / "clones"), "out_dir": str(tmp_path / "out"),
                             "workers": 1, "max_repo_share": None}
-    monkeypatch.setattr(ac, "select_repos", lambda acfg: [{"repo": "free/repo", "github_url": str(repo)},
-                                                          {"repo": "closed/repo", "github_url": str(repo)}])
+    monkeypatch.setattr(ac, "select_repos", lambda acfg: [
+        {"repo": "free/repo", "github_url": str(repo), "language": "TypeScript"},
+        {"repo": "closed/repo", "github_url": str(repo), "language": "TypeScript"}])
     monkeypatch.setattr(ac, "github_license", lambda name: "MIT" if name == "free/repo" else "NOASSERTION")
     cloned = []
     real_clone = ac._clone
@@ -207,3 +213,65 @@ def test_build_skips_repositories_it_could_not_redistribute(tmp_path, repo, monk
     rows = [json.loads(line) for line in open(tmp_path / "out" / f"{split}.jsonl")]
     assert summary[split]["repos"] == 1 and {r["license"] for r in rows} == {"MIT"}
     assert not (tmp_path / "clones" / "free__repo").exists()  # removed once its rows were extracted
+
+
+def test_language_settings_add_the_languages_own_exclusions_and_overrides():
+    acfg = {"exclude": ["vendor/*"], "min_signed_commits": 20, "rows_per_class_per_repo": 500,
+            "languages": {"C#": {"extensions": [".cs"], "exclude": ["*.g.cs"], "min_signed_commits": 5},
+                          "Python": {"extensions": [".py"]}}}
+
+    cs, py = ac.language_settings(acfg, "C#"), ac.language_settings(acfg, "Python")
+
+    assert cs["extensions"] == [".cs"] and cs["exclude"] == ["vendor/*", "*.g.cs"] and cs["min_signed_commits"] == 5
+    assert py["exclude"] == ["vendor/*"] and py["min_signed_commits"] == 20 and py["language"] == "Python"
+    assert "languages" not in cs and acfg["exclude"] == ["vendor/*"]  # the shared settings are left untouched
+
+
+def test_rows_take_the_repositorys_language_and_react_only_applies_to_javascript(tmp_path):
+    repo = tmp_path / "py"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    body = "".join(f"from react import x{i}\n" for i in range(8))  # looks like a React import to the regex
+    _commit(repo, "2019-03-01", "human", {"a.py": body, "b.ts": _ts("b", 8)})
+    _commit(repo, "2026-03-01", "feat" + CLAUDE_TRAILER, {"c.py": body})
+    acfg = {**ac.language_settings(load_config()["agent_commits"], "Python"), "rows_per_class_per_repo": 10}
+
+    rows, _ = ac.build_repo_rows(repo, "owner/py", acfg)
+
+    assert sorted(r["path"] for r in rows) == ["a.py", "c.py"]  # not the TypeScript file
+    assert all(r["language"] == "Python" and not r["react"] for r in rows)
+
+
+def test_repository_shares_are_capped_within_each_language(tmp_path):
+    per_repo = tmp_path / "repos"
+    per_repo.mkdir()
+    sizes = {"ts/big": 100, **{f"ts/r{i}": 10 for i in range(49)}, "cs/only": 100}
+    for name, n in sizes.items():
+        rows = [{"label": label, "language": "C#" if name.startswith("cs") else "TypeScript", "react": False,
+                 "code": "x"} for label in ("ai", "human") for _ in range(n)]
+        (per_repo / f"{name.replace('/', '__')}.json").write_text(json.dumps({"rows": rows}))
+    acfg = {**_acfg(), "max_repo_share": 0.05}
+
+    summary = ac.write_splits(per_repo, tmp_path, acfg, list(sizes), [], log=lambda _: None,
+                              languages={n: "C#" if n.startswith("cs") else "TypeScript" for n in sizes})
+
+    total = {lang: sum(s["by_language"].get(lang, {}).get("ai", 0) for s in summary.values()) for lang in ("TypeScript", "C#")}
+    assert total["C#"] == 100  # alone in its language: nothing to cap against
+    assert total["TypeScript"] < 490 + 40  # ts/big capped to ~5% of the TypeScript rows
+
+
+def test_languages_with_few_repositories_are_capped_at_twice_an_equal_share(tmp_path):
+    per_repo = tmp_path / "repos"
+    per_repo.mkdir()
+    sizes = {"big": 500, **{f"r{i}": 20 for i in range(9)}}  # 10 repositories: 5% is out of reach
+    for name, n in sizes.items():
+        rows = [{"label": label, "language": "JavaScript", "react": False, "code": "x"}
+                for label in ("ai", "human") for _ in range(n)]
+        (per_repo / f"{name}.json").write_text(json.dumps({"rows": rows}))
+
+    summary = ac.write_splits(per_repo, tmp_path, {**_acfg(), "max_repo_share": 0.05}, list(sizes), [],
+                              log=lambda _: None, languages={n: "JavaScript" for n in sizes})
+
+    ai = sum(s["ai"] for s in summary.values())
+    assert ai > 180 + 30  # small repositories untouched, the big one kept above them...
+    assert ai < 500 + 180  # ...but capped to ~20% of the rows

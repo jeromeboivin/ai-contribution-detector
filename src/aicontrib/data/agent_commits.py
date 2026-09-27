@@ -2,7 +2,8 @@
 
 Benchmark snippets don't look like real repository code, and no benchmark has TypeScript. This
 builds labelled data from real repositories instead, one row per file changed in a commit, rebuilt
-exactly as `classify-commit` sees it (the post-image of each hunk, see aicontrib.diff.commit):
+exactly as `classify-commit` sees it (the post-image of each hunk, see aicontrib.diff.commit). Each
+repository gives rows in its main language (agent_commits.languages):
 
 - ai: commits carrying a self-declared coding-agent signature -- a `Co-Authored-By: Claude` (Copilot,
   Cursor, Codex...) trailer, a tool-written footer, or an agent bot identity. The rules are ported
@@ -68,8 +69,7 @@ EXCLUDED_BOTS = [re.compile(rx, re.I | re.M) for rx in (
     r"\bsnyk-bot\b", r"\bsemantic-release-bot\b", r"\bgreenkeeper\b", r"\bweblate\b", r"\bcrowdin[- ]?bot\b",
     r"\btravis[- ]ci\b", r"\bnetlify\[?bot\]?\b",
 )]
-_LANGUAGE_BY_EXTENSION = {".ts": "TypeScript", ".tsx": "TypeScript", ".mts": "TypeScript", ".cts": "TypeScript",
-                          ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript"}
+_REACT_LANGUAGES = {"TypeScript", "JavaScript"}
 _IMPORTS_REACT = re.compile(r"""(from\s+|require\(\s*)['"]react(-dom)?(/[^'"]*)?['"]""")
 
 
@@ -111,7 +111,10 @@ def is_autonomous(commit: Commit) -> bool:
 # ---- Reading a repository ----
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(repo), "-c", "core.quotePath=false", *args], capture_output=True, check=True)
+    # No automatic gc / maintenance: git may start it in the background after a command (e.g. once lazy blob
+    # fetches pile up), and it would still be writing into the clone when the clone gets deleted.
+    result = subprocess.run(["git", "-C", str(repo), "-c", "core.quotePath=false", "-c", "gc.auto=0",
+                             "-c", "maintenance.auto=false", *args], capture_output=True, check=True)
     return result.stdout.decode("utf-8", errors="replace")
 
 
@@ -149,8 +152,8 @@ def _file_rows(repo: Path, commit: Commit, paths: list[str], acfg: dict) -> list
         if changed < acfg["min_changed_lines"] or not text.strip():
             continue
         suffix = Path(patched.path).suffix.lower()
-        rows.append({"code": text, "path": patched.path, "language": _LANGUAGE_BY_EXTENSION.get(suffix, suffix),
-                     "react": suffix in (".tsx", ".jsx") or bool(_IMPORTS_REACT.search(text)),
+        react = acfg["language"] in _REACT_LANGUAGES and (suffix in (".tsx", ".jsx") or bool(_IMPORTS_REACT.search(text)))
+        rows.append({"code": text, "path": patched.path, "language": acfg["language"], "react": react,
                      "added": patched.is_added_file, "lines_changed": changed})
     rows.sort(key=lambda r: r["lines_changed"], reverse=True)
     return rows[: acfg["max_files_per_commit"]]
@@ -187,8 +190,19 @@ def match_sizes(ai_rows: list[dict], human_rows: list[dict]) -> tuple[list[dict]
     return [ai_rows[i] for i, _ in matched], [human_rows[j] for _, j in matched]
 
 
+def language_settings(acfg: dict, language: str) -> dict:
+    """The agent_commits settings for repositories of one language: the shared ones, with the language's
+    extensions, its exclude patterns added to the shared ones, and any other setting it overrides."""
+    own = dict(acfg["languages"][language])
+    out = {k: v for k, v in acfg.items() if k != "languages"}
+    out["exclude"] = list(acfg["exclude"]) + list(own.pop("exclude", None) or [])
+    out.update(own, language=language)
+    return out
+
+
 def build_repo_rows(repo: Path, repo_name: str, acfg: dict) -> tuple[list[dict], dict]:
-    """(rows, stats) for one cloned repository: equal numbers of size-matched AI and human rows, or none."""
+    """(rows, stats) for one cloned repository: equal numbers of size-matched AI and human rows, or none.
+    acfg: the settings of the repository's language (language_settings)."""
     seed = int(hashlib.sha1(repo_name.encode()).hexdigest()[:8], 16)
     signed = [c for c in list_commits(repo, since=acfg["ai_since"]) if detect_agents(c)]
     human = [c for c in list_commits(repo, until=acfg["human_until"]) if not is_excluded_bot(c) and not detect_agents(c)]
@@ -292,16 +306,20 @@ def cap_repo_shares(rows_per_repo: dict[str, int], max_share: float | None) -> d
 # ---- Building the whole dataset ----
 
 def select_repos(acfg: dict) -> list[dict]:
-    """Index rows in the configured languages with enough signed commits, most signed commits first."""
+    """Index rows of each configured language with enough signed commits, most signed commits first."""
     import pandas as pd
     from huggingface_hub import hf_hub_download
 
     parquet = hf_hub_download(acfg["index_repo"], "data/train-00000-of-00001.parquet", repo_type="dataset",
                               revision=acfg["index_revision"])
     df = pd.read_parquet(parquet, columns=["repo", "github_url", "language", "agent_attributed_commits"])
-    df = df[df["language"].isin(acfg["repo_languages"]) & (df["agent_attributed_commits"] >= acfg["min_signed_commits"])]
-    df = df.sort_values("agent_attributed_commits", ascending=False)
-    return (df.head(acfg["max_repos"]) if acfg.get("max_repos") else df).to_dict("records")
+    selected = []
+    for language in acfg["languages"]:
+        lacfg = language_settings(acfg, language)
+        rows = df[(df["language"] == language) & (df["agent_attributed_commits"] >= lacfg["min_signed_commits"])]
+        rows = rows.sort_values("agent_attributed_commits", ascending=False)
+        selected += (rows.head(acfg["max_repos"]) if acfg.get("max_repos") else rows).to_dict("records")
+    return selected
 
 
 def _clone(url: str, dest: Path) -> None:
@@ -311,15 +329,17 @@ def _clone(url: str, dest: Path) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.parent.mkdir(parents=True, exist_ok=True)
     # Blobless and without a working tree: history and trees only; file contents come per selected commit.
-    subprocess.run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--single-branch", url, str(tmp)],
+    subprocess.run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--single-branch",
+                    "--config", "gc.auto=0", "--config", "maintenance.auto=false", url, str(tmp)],
                    capture_output=True, check=True)
     tmp.rename(dest)
 
 
 def _remove_clone(path: Path) -> None:
-    # Git marks its object files read-only, which makes a plain rmtree fail on Windows.
+    # Git marks its object files read-only, which makes a plain rmtree fail on Windows. Full owner rights,
+    # not just write: a directory also needs read and execute to be emptied.
     def make_writable_and_retry(func, target, _):
-        os.chmod(target, stat.S_IWRITE)
+        os.chmod(target, stat.S_IRWXU)
         func(target)
 
     shutil.rmtree(path, onerror=make_writable_and_retry)
@@ -338,26 +358,28 @@ def build_agent_commits(cfg: dict, max_repos: int | None = None, log: Callable[[
     per_repo_dir = out_dir / "repos"
     per_repo_dir.mkdir(parents=True, exist_ok=True)
     repos = select_repos(acfg)
-    log(f"{len(repos)} repositories selected from the index ({', '.join(acfg['repo_languages'])}, "
-        f"{acfg['min_signed_commits']}+ signed commits)")
+    by_language = {lang: sum(e["language"] == lang for e in repos) for lang in acfg["languages"]}
+    log(f"{len(repos)} repositories selected from the index: "
+        + ", ".join(f"{lang} {n} ({language_settings(acfg, lang)['min_signed_commits']}+ signed commits)"
+                    for lang, n in by_language.items()))
     licenses = fetch_licenses([e["repo"] for e in repos], out_dir / "licenses.json", log)
     if acfg.get("redistributable_only"):
         keep = [e for e in repos if license_group(licenses[e["repo"]], acfg)]
         log(f"{len(keep)} of them under a license that lets the result be redistributed; the others are skipped")
         repos = keep
-    settings = {k: acfg[k] for k in _ROW_SETTINGS}
-
     def process(entry: dict) -> dict:
         name = entry["repo"]
+        lacfg = language_settings(acfg, entry["language"])
+        settings = {k: lacfg[k] for k in _ROW_SETTINGS}
         slug = name.replace("/", "__")
         done = per_repo_dir / f"{slug}.json"
         if done.exists():  # resume: each finished repo is saved on its own, with the settings it was built with
             saved = json.loads(done.read_text(encoding="utf-8"))["stats"]
-            if _reusable(saved, acfg):
+            if _reusable(saved, lacfg):
                 return {**saved, "license": licenses[name]}
         try:
             _clone(entry["github_url"], clone_dir / slug)
-            rows, stats = build_repo_rows(clone_dir / slug, name, acfg)
+            rows, stats = build_repo_rows(clone_dir / slug, name, lacfg)
             stats.update(settings=settings, license=licenses[name])
             for row in rows:
                 row["license"] = licenses[name]
@@ -374,33 +396,43 @@ def build_agent_commits(cfg: dict, max_repos: int | None = None, log: Callable[[
 
     all_stats = []
     with ThreadPoolExecutor(max_workers=acfg["workers"]) as pool:
-        futures = {pool.submit(process, entry): entry["repo"] for entry in repos}
+        futures = {pool.submit(process, entry): entry for entry in repos}
         for i, future in enumerate(as_completed(futures), 1):
             stats = future.result()
             all_stats.append(stats)
             outcome = (f"{stats['rows_per_class']} rows per class" if "rows_per_class" in stats
                        else f"skipped ({stats.get('skipped') or 'error: ' + stats.get('error', '')})")
-            log(f"[{i}/{len(repos)}] {stats['repo']}: {outcome}")
+            log(f"[{i}/{len(repos)}] {stats['repo']} ({futures[future]['language']}): {outcome}")
 
     built = {s["repo"] for s in all_stats if "rows_per_class" in s}
     return write_splits(per_repo_dir, out_dir, acfg, [e["repo"] for e in repos if e["repo"] in built], all_stats, log,
-                        licenses=licenses)
+                        licenses=licenses, languages={e["repo"]: e["language"] for e in repos})
 
 
 def write_splits(per_repo_dir: Path, out_dir: Path, acfg: dict, repo_names: list[str], all_stats: list[dict],
-                 log: Callable[[str], None] = print, licenses: dict | None = None) -> dict:
-    """The rows of repo_names into {train,validation,test}.jsonl, each repository capped to
-    max_repo_share of the total (its best-matched pairs are kept)."""
+                 log: Callable[[str], None] = print, licenses: dict | None = None,
+                 languages: dict[str, str] | None = None) -> dict:
+    """The rows of repo_names into {train,validation,test}.jsonl, each repository capped to a share of its
+    language's rows (its best-matched pairs are kept): max_repo_share, or twice an equal share when that's
+    more -- a language with N repositories can't have them all under 1/N, and near that limit the cap would
+    cut every repository down to the smallest one. languages: each repository's language; without it, all
+    repositories count as one language."""
     rows_by_repo = {}
     for name in repo_names:
         path = per_repo_dir / f"{name.replace('/', '__')}.json"
         if path.exists():
             rows_by_repo[name] = json.loads(path.read_text(encoding="utf-8"))["rows"]
     per_class = {name: len(rows) // 2 for name, rows in rows_by_repo.items()}
-    keep = cap_repo_shares(per_class, acfg.get("max_repo_share"))
-    capped = {name: f"{per_class[name]} -> {keep[name]}" for name in per_class if keep[name] < per_class[name]}
-    if capped:
-        log(f"Capped to {acfg['max_repo_share']:.0%} of the rows each: {capped}")
+    language_of = {name: (languages or {}).get(name) for name in rows_by_repo}
+    keep = {}
+    for language in dict.fromkeys(language_of.values()):
+        group = {n: c for n, c in per_class.items() if language_of[n] == language}
+        max_share = ((acfg.get("languages") or {}).get(language) or {}).get("max_repo_share", acfg.get("max_repo_share"))
+        share = max(max_share, 2 / len(group)) if max_share else None
+        keep.update(cap_repo_shares(group, share))
+        capped = {name: f"{group[name]} -> {keep[name]}" for name in group if keep[name] < group[name]}
+        if capped:
+            log(f"{language or 'All'}: capped to {share:.0%} of the language's rows each: {capped}")
     counts: dict = {}
     files = {split: open(out_dir / f"{split}.jsonl", "w", encoding="utf-8") for split in ("train", "validation", "test")}
     try:
@@ -416,15 +448,23 @@ def write_splits(per_repo_dir: Path, out_dir: Path, acfg: dict, repo_names: list
                 counts[key] = counts.get(key, 0) + 1
                 counts[(split, "react")] = counts.get((split, "react"), 0) + row["react"]
                 counts[(split, "repos")] = counts.get((split, "repos"), set()) | {name}
+                by_language = counts.setdefault((split, "by_language"), {}).setdefault(
+                    row["language"], {"repos": set(), "human": 0, "ai": 0})
+                by_language["repos"].add(name)
+                by_language[row["label"]] += 1
     finally:
         for f in files.values():
             f.close()
     summary = {split: {"repos": len(counts.get((split, "repos"), set())), "human": counts.get((split, "human"), 0),
-                       "ai": counts.get((split, "ai"), 0), "react": counts.get((split, "react"), 0)}
+                       "ai": counts.get((split, "ai"), 0), "react": counts.get((split, "react"), 0),
+                       "by_language": {lang: {**c, "repos": len(c["repos"])} for lang, c
+                                       in sorted(counts.get((split, "by_language"), {}).items())}}
                for split in ("train", "validation", "test")}
     (out_dir / "summary.json").write_text(json.dumps({"splits": summary, "repos": all_stats}, indent=2) + "\n",
                                           encoding="utf-8")
     for split, s in summary.items():
         log(f"[{split}] {s['repos']} repos: {s['human']} human rows, {s['ai']} AI rows ({s['react']} React)")
+        for lang, c in s["by_language"].items():
+            log(f"    {lang}: {c['repos']} repos, {c['human']} human rows, {c['ai']} AI rows")
     log(f"Written to {out_dir}")
     return summary
