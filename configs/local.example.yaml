@@ -26,7 +26,9 @@
 # ---- Train only on some programming languages ----------------------------------------
 # Applies to every split (train, validation, test). Use `include` (keep only these) or
 # `exclude` (keep everything but these). Names are case-insensitive:
-# C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML.
+# C, C#, C++, Go, Java, JavaScript, PHP, Python, Rust, Ruby, HTML, TypeScript.
+# `report` and `evaluate-repo` then score only code in these languages: the trained model records
+# them, and ignores files in any other language.
 # The README's "Languages in the training data" table shows how much data each one has.
 # Re-run `aicontrib prepare` (then embed/train) after changing this.
 #

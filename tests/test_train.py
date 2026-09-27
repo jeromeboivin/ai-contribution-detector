@@ -29,6 +29,7 @@ def test_learning_rate_is_halved_on_plateau_then_training_stops(tmp_path):
     cfg["classes"]["names"] = ["human", "co_authored", "ai"]  # three clusters
     cfg["paths"]["embeddings_dir"] = str(emb)
     cfg["paths"]["models_dir"] = str(tmp_path / "models")
+    cfg["paths"]["processed_dir"] = str(tmp_path / "processed")
     cfg["monitor"]["port"] = 0
     cfg["training"].update(epochs=100, lr=0.001, early_stopping_patience=7,
                            lr_reduce_patience=2, lr_reduce_factor=0.5, min_lr=1e-6)
@@ -77,6 +78,7 @@ def _setup_run(tmp_path, **training):
     cfg["classes"]["names"] = ["human", "co_authored", "ai"]
     cfg["paths"]["embeddings_dir"] = str(emb)
     cfg["paths"]["models_dir"] = str(tmp_path / "models")
+    cfg["paths"]["processed_dir"] = str(tmp_path / "processed")
     cfg["monitor"]["port"] = 0
     cfg["training"].update(epochs=100, lr=0.001, lr_reduce_patience=2, **training)
     config_path = tmp_path / "cfg.yaml"
@@ -128,3 +130,28 @@ def test_training_from_scratch_warns_it_replaces_the_saved_model(tmp_path, capsy
     assert "will be replaced" not in capsys.readouterr().out
     train(config_path)
     assert "will be replaced" in capsys.readouterr().out
+
+
+def test_the_model_records_the_languages_it_was_trained_on(tmp_path):
+    import torch
+
+    config_path = _setup_run(tmp_path, early_stopping_patience=2)
+    (tmp_path / "processed").mkdir()
+    langs = ["typescript", "C#", "JavaScript"] * 30  # one per training row, as `prepare` writes them
+    (tmp_path / "processed" / "train.jsonl").write_text("".join(json.dumps({"language": lang}) + "\n" for lang in langs))
+
+    train(config_path)
+
+    assert torch.load(tmp_path / "models" / "mlp_classifier.pt")["languages"] == ["C#", "JavaScript", "TypeScript"]
+
+
+def test_languages_are_unknown_when_the_prepared_rows_dont_match_the_embeddings(tmp_path):
+    import torch
+
+    config_path = _setup_run(tmp_path, early_stopping_patience=2)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "train.jsonl").write_text(json.dumps({"language": "C#"}) + "\n")  # 1 row, not 90
+
+    train(config_path)
+
+    assert torch.load(tmp_path / "models" / "mlp_classifier.pt")["languages"] is None

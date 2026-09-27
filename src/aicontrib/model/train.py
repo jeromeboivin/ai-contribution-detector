@@ -11,7 +11,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from aicontrib.config import load_config
 from aicontrib.device import get_device
 from aicontrib.model.classifier import MLPClassifier
-from aicontrib.model.evaluate import load_checkpoint
+from aicontrib.data.languages import canonical
+from aicontrib.model.evaluate import _split_languages, load_checkpoint
 from aicontrib.monitor import MetricsLogger, serve_dashboard
 
 
@@ -39,6 +40,17 @@ def _evaluate_loader(model: nn.Module, loader: DataLoader, device: torch.device)
         all_preds.extend(preds)
         all_labels.extend(y.numpy())
     return f1_score(all_labels, all_preds, average="macro")
+
+
+def _trained_languages(cfg: dict, n_rows: int) -> list[str] | None:
+    """The languages of the training rows, recorded in the checkpoint so that commit classification
+    scores only code in those languages. None when unknown: prepared data of an older version (no
+    language per row), or prepared again since `embed` (rows no longer match the embeddings)."""
+    languages = _split_languages(cfg, "train")
+    if len(languages) != n_rows:
+        return None
+    names = {canonical(lang) for lang in languages}
+    return None if None in names else sorted(names)
 
 
 def _load_for_resume(checkpoint_path: Path, device: torch.device, cfg: dict, input_dim: int,
@@ -83,6 +95,11 @@ def train(config_path: str | None = None, resume: bool = False) -> Path:
     representation = _representation(cfg, "train")
     if _representation(cfg, "validation") != representation:
         raise ValueError("train and validation embeddings use different representations -- re-run `aicontrib embed`")
+
+    languages = _trained_languages(cfg, len(train_ds))
+    if languages is None:
+        print("Note: the training rows' languages are unknown (re-run `aicontrib prepare` and `embed` to record "
+              "them); commit classification will fall back to dataset.languages in the config.")
 
     models_dir = Path(cfg["paths"]["models_dir"])
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +183,7 @@ def train(config_path: str | None = None, resume: bool = False) -> Path:
                     "dropout": cfg["model"]["dropout"],
                     "representation": representation,
                     "class_names": cfg["classes"]["names"],
+                    "languages": languages,
                     # For --resume:
                     "epoch": epoch + 1,
                     "val_macro_f1": val_f1,

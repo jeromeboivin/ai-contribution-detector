@@ -18,6 +18,7 @@ import torch
 from unidiff import PatchSet
 
 from aicontrib.config import load_config
+from aicontrib.data.languages import canonical, language_filter
 from aicontrib.device import get_device
 from aicontrib.features.embed import CodeEmbedder
 from aicontrib.model.evaluate import load_checkpoint
@@ -36,6 +37,19 @@ def weighted_aggregate(files: list[dict], class_names: list[str]) -> dict[str, f
     weights = np.array([f["lines_changed"] for f in files], dtype=np.float64)
     probs = np.array([[f["probabilities"][c] for c in class_names] for f in files])
     return dict(zip(class_names, (weights[:, None] / weights.sum() * probs).sum(axis=0).tolist()))
+
+
+def scored_languages(cfg: dict) -> list[str]:
+    """The languages of commit_classification.supported_extensions that commits are scored on: those the
+    model was trained on, as its checkpoint records them. Checkpoints of older versions don't record
+    them: dataset.languages in the config then stands in. Code in any other language is ignored, like
+    JSON or XML -- the model has never seen it, so its scores would mean nothing."""
+    supported = {canonical(lang) for lang in cfg["commit_classification"]["supported_extensions"].values()}
+    trained = torch.load(Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt", map_location="cpu").get("languages")
+    if trained is not None:
+        return sorted(supported & set(trained))
+    allowed = language_filter(cfg)
+    return sorted(lang for lang in supported if allowed is None or allowed(lang))
 
 
 def run_git(repo_path: str, *args: str) -> str:
@@ -83,7 +97,9 @@ class CommitClassifier:
                                      representation=self.embedder.representation_id(),
                                      class_names=self.cfg["classes"]["names"])
         self.class_names = self.cfg["classes"]["names"]
-        self.extensions = self.cfg["commit_classification"]["supported_extensions"]
+        self.languages = scored_languages(self.cfg)
+        self.extensions = {ext: lang for ext, lang in self.cfg["commit_classification"]["supported_extensions"].items()
+                           if canonical(lang) in self.languages}
         self.max_files = self.cfg["commit_classification"].get("max_files_per_commit")
 
     @torch.no_grad()

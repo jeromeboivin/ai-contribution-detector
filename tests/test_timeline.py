@@ -3,6 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from aicontrib.config import load_config
@@ -32,6 +33,12 @@ def _make_repo(path: Path) -> None:
     _git(path, "commit", "-q", "-m", "feature", date="2023-03-02T10:00:00")
     _git(path, "checkout", "-q", "main")
     _git(path, "merge", "-q", "--no-ff", "-m", "merge feature", "feature", date="2023-03-03T10:00:00")
+
+
+@pytest.fixture(autouse=True)
+def _scored_languages(monkeypatch):
+    # The fake model files below aren't real checkpoints to read the trained languages from.
+    monkeypatch.setattr(timeline, "scored_languages", lambda cfg: ["Python"])
 
 
 def _config_with_model(tmp_path: Path) -> str:

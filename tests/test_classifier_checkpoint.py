@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from aicontrib.config import load_config
 from aicontrib.model.classifier import MLPClassifier
 from aicontrib.model.evaluate import load_checkpoint
 
@@ -49,3 +50,30 @@ def test_checkpoint_with_other_class_names_is_refused(tmp_path):
     with pytest.raises(ValueError, match="classes.names"):
         load_checkpoint(tmp_path / "m.pt", torch.device("cpu"), class_names=["ai", "human"])
     load_checkpoint(tmp_path / "m.pt", torch.device("cpu"), class_names=["human", "ai"])
+
+
+def _cfg_with_checkpoint(tmp_path, **ckpt):
+    cfg = load_config()
+    cfg["paths"]["models_dir"] = str(tmp_path)
+    torch.save(ckpt, tmp_path / "mlp_classifier.pt")
+    return cfg
+
+
+def test_commits_are_scored_only_in_the_languages_the_model_was_trained_on(tmp_path):
+    from aicontrib.diff.commit import scored_languages
+
+    cfg = _cfg_with_checkpoint(tmp_path, languages=["C#", "TypeScript", "Go"])  # Go: not a supported extension
+    cfg["dataset"]["languages"] = {"include": ["Python"]}  # the checkpoint's list wins over the config
+
+    assert scored_languages(cfg) == ["C#", "TypeScript"]
+
+
+def test_older_checkpoints_fall_back_to_the_config_languages(tmp_path):
+    from aicontrib.diff.commit import scored_languages
+
+    cfg = _cfg_with_checkpoint(tmp_path)
+    cfg["dataset"]["languages"] = {"include": ["JavaScript", "C++"]}
+    assert scored_languages(cfg) == ["C++", "JavaScript"]
+
+    cfg["dataset"]["languages"] = {}
+    assert scored_languages(cfg) == ["C#", "C++", "JavaScript", "Python", "TypeScript"]

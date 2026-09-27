@@ -597,7 +597,11 @@ seen yet.
 What counts:
 
 - **Only commits that change supported code** — `.py`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`,
-  `.mts`, `.cts`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.cs`. A commit that only touches XML, JSON, images, binaries or proprietary formats is **excluded**
+  `.mts`, `.cts`, `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp`, `.cs` — **in a language the model was trained on**.
+  Training records those languages in the model file (a model trained before that falls back to
+  `dataset.languages` in the config), so with `dataset.languages: {include: [JavaScript, TypeScript, C#]}`,
+  `.py` and C++ files are ignored too: the model has never seen them, so their scores would mean nothing.
+  A commit that only touches other files (XML, JSON, images, binaries, proprietary formats…) is **excluded**
   from the percentages (the page reports how many were). In a mixed commit, only the code files are
   scored. Edit `commit_classification.supported_extensions` to change the list.
 - **Merge commits are excluded** — their changes are already counted in the commits they merge.

@@ -307,14 +307,16 @@
   }
 
   // ---- Notes -------------------------------------------------------------
+  // The languages the model was trained on; reports of older versions don't list them.
+  const scoredLanguages = (report.scored_languages || ["Python", "JavaScript", "TypeScript", "C++", "C#"]).join(", ");
   function renderNote() {
     const noteParts = language === null
-      ? ["Each commit is classified from the code it changes (Python, JavaScript, TypeScript, C++, C#) and counted " +
+      ? [`Each commit is classified from the code it changes in ${scoredLanguages} and counted ` +
           "under its most likely class, by author date."]
       : [`Only commits changing ${language} code, each classified on that code alone (its changes in other ` +
           "languages are ignored) and counted under its most likely class, by author date."];
     if (language === null && report.n_skipped) {
-      noteParts.push(`Excluded: ${commits(report.n_skipped)} touching no supported-language file.`);
+      noteParts.push(`Excluded: ${commits(report.n_skipped)} changing no code in these languages.`);
     }
     if (report.n_errors) noteParts.push(`Excluded: ${commits(report.n_errors)} that could not be read.`);
     noteParts.push("Merge commits are excluded (their changes are already counted in the merged commits).");

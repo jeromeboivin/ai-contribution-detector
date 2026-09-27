@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from aicontrib.config import load_config
 from aicontrib.data.languages import canonical
-from aicontrib.diff.commit import CommitClassifier, run_git
+from aicontrib.diff.commit import CommitClassifier, run_git, scored_languages
 from aicontrib.diff.known_repo_eval import date_range_args, evenly_spaced
 
 _TEMPLATE = Path(__file__).resolve().parents[1] / "static" / "timeline.html"
@@ -88,10 +88,13 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()[:12]
 
 
-def _cache_path(cfg: dict, repo_path: str, model_digest: str) -> Path:
+def _cache_path(cfg: dict, repo_path: str, model_digest: str, languages: list[str]) -> Path:
+    """One cache per repo, model and set of scored languages: each changes the predictions."""
     resolved = Path(repo_path).resolve()
     repo_id = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:8]
-    return Path(cfg["paths"]["timeline_cache_dir"]) / f"{resolved.name}-{repo_id}-model-{model_digest}.jsonl"
+    languages_id = hashlib.sha256(",".join(languages).encode("utf-8")).hexdigest()[:6]
+    return (Path(cfg["paths"]["timeline_cache_dir"])
+            / f"{resolved.name}-{repo_id}-model-{model_digest}-languages-{languages_id}.jsonl")
 
 
 def analyze_repo(
@@ -105,7 +108,8 @@ def analyze_repo(
     all_commits = list_commits(repo_path, since, until)  # the cache is per commit, so any range can reuse it
     commits = evenly_spaced(all_commits, max_commits) if max_commits else all_commits
 
-    cache_path = _cache_path(cfg, repo_path, model_digest)
+    languages = scored_languages(cfg)
+    cache_path = _cache_path(cfg, repo_path, model_digest, languages)
     results: dict[str, dict] = {}
     if use_cache and cache_path.exists():
         with open(cache_path, encoding="utf-8") as f:
@@ -154,6 +158,7 @@ def analyze_repo(
         "repo": Path(repo_path).resolve().name,
         "generated_at": dt.datetime.now().isoformat(timespec="minutes"),
         "model": model_digest,
+        "scored_languages": languages,
         "class_names": class_names,
         "class_labels": {c: CLASS_LABELS.get(c, c) for c in class_names},
         "since": str(since) if since else None,
