@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -72,16 +73,34 @@ def test_evaluate_known_repo_structure(tmp_path, config_path):
     assert sum(result["predicted_counts"].values()) == 3
 
 
-def test_evaluate_known_repo_added_files_only(tmp_path, config_path):
-    from aicontrib.diff.known_repo_eval import evaluate_known_repo
+def test_commit_sampling_respects_the_date_range(tmp_path):
+    from aicontrib.diff.commit import run_git
+    from aicontrib.diff.known_repo_eval import _sample_commit_shas
 
-    repo_path = tmp_path / "repo"
-    _make_repo(repo_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _run("git", "init", "-q", cwd=repo)
+    for date in ["2019-06-01", "2020-03-01", "2020-09-01", "2023-05-01"]:
+        (repo / "f.ts").write_text(date)
+        _run("git", "add", "f.ts", cwd=repo)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.com", "commit", "-q", "-m", date],
+                       cwd=repo, check=True, env={**os.environ, "GIT_AUTHOR_DATE": f"{date}T12:00:00",
+                                                  "GIT_COMMITTER_DATE": f"{date}T12:00:00"})
 
-    result = evaluate_known_repo(str(repo_path), "ai", n_samples=10, config_path=config_path, added_files_only=True)
+    shas = _sample_commit_shas(str(repo), 10, since="2020-01-01", until="2021-12-31")
 
-    # Only the first commit creates f.py; the other two modify it.
-    assert result["added_files_only"] is True
-    assert result["n_commits_evaluated"] == 1
-    assert result["n_commits_skipped_no_supported_files"] == 2
-    assert sum(result["predicted_counts"].values()) == 1
+    messages = [run_git(str(repo), "log", "-1", "--format=%s", sha).strip() for sha in shas]
+    assert sorted(messages) == ["2020-03-01", "2020-09-01"]
+
+
+def test_pair_aucs_compares_every_human_repo_with_every_ai_repo():
+    from aicontrib.diff.known_repo_eval import pair_aucs
+
+    def repo(name, expected_class, p_ais):
+        return {"name": name, "expected_class": expected_class,
+                "per_commit": [{"aggregate": {"human": 1 - p, "ai": p}} for p in p_ais]}
+
+    pairs = pair_aucs([repo("h", "human", [0.1, 0.2, 0.6]), repo("a", "ai", [0.5, 0.9]),
+                       repo("empty", "ai", [])])
+
+    assert pairs == [{"human": "h", "ai": "a", "auc": pytest.approx(5 / 6)}]  # 0.6 > 0.5: one of 6 pairs misordered

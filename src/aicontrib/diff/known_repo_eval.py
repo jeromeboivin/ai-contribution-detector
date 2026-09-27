@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from sklearn.metrics import roc_auc_score
+
 from aicontrib.config import load_config
 from aicontrib.diff.commit import CommitClassifier, run_git
 
@@ -37,11 +39,9 @@ def _sample_commit_shas(repo_path: str, n_samples: int, since=None, until=None) 
 
 def evaluate_known_repo(
     repo_path: str, expected_class: str, n_samples: int = 50, config_path: str | None = None,
-    added_files_only: bool = False, since=None, until=None,
+    since=None, until=None,
 ) -> dict:
-    """added_files_only: score only files a commit creates (whole files, like the training
-    snippets) and skip commits that create none -- compare with a normal run to see how much
-    of the error comes from classifying stitched-together diff hunks. since/until: only sample
+    """Commits are classified exactly as `report` classifies them. since/until: only sample
     commits in that date range (anything `git log --since` accepts, e.g. 2021-12-31)."""
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
@@ -54,7 +54,7 @@ def evaluate_known_repo(
     if not shas:
         raise ValueError(f"no commits in {repo_path}" + (f" between {since or 'the start'} and {until or 'now'}"
                                                           if since or until else ""))
-    classifier = CommitClassifier(config_path, added_files_only=added_files_only)
+    classifier = CommitClassifier(config_path)
 
     per_commit = []
     skipped = 0
@@ -90,7 +90,6 @@ def evaluate_known_repo(
     return {
         "repo": repo_path,
         "expected_class": expected_class,
-        "added_files_only": added_files_only,
         "n_commits_sampled": len(shas),
         "n_commits_evaluated": n_evaluated,
         "n_commits_skipped_no_supported_files": skipped,
@@ -103,3 +102,18 @@ def evaluate_known_repo(
         },
         "per_commit": per_commit,
     }
+
+
+def pair_aucs(results: list[dict]) -> list[dict]:
+    """For every (human repo, AI repo) pair of evaluate_known_repo results: the chance that a random
+    commit of the AI repo gets a higher P(ai) than a random commit of the human one (0.5 = no signal,
+    1.0 = perfect). Needs no decision threshold, so it measures separation even when the
+    probabilities are off-scale. `results` items carry a "name" key."""
+    def p_ai(result):
+        return [c["aggregate"]["ai"] for c in result["per_commit"]]
+
+    humans = [r for r in results if r["expected_class"] == "human" and r["per_commit"]]
+    ais = [r for r in results if r["expected_class"] == "ai" and r["per_commit"]]
+    return [{"human": h["name"], "ai": a["name"],
+             "auc": float(roc_auc_score([0] * len(p_ai(h)) + [1] * len(p_ai(a)), p_ai(h) + p_ai(a)))}
+            for h in humans for a in ais]

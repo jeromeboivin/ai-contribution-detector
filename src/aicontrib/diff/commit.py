@@ -68,7 +68,7 @@ class CommitClassifier:
     """Loads the encoder and MLP once, then classifies any number of commits --
     reloading the 110M-param encoder per commit would dominate a full-history scan."""
 
-    def __init__(self, config_path: str | None = None, added_files_only: bool = False):
+    def __init__(self, config_path: str | None = None):
         self.cfg = load_config(config_path) if config_path else load_config()
         self.device = get_device()
         self.embedder = CodeEmbedder(self.cfg)
@@ -78,9 +78,6 @@ class CommitClassifier:
         self.class_names = self.cfg["classes"]["names"]
         self.extensions = self.cfg["commit_classification"]["supported_extensions"]
         self.max_files = self.cfg["commit_classification"].get("max_files_per_commit")
-        # Newly added files are whole files, like the training snippets; edits to existing files are
-        # stitched-together hunks. Scoring only added files isolates that mismatch (see evaluate-repo).
-        self.added_files_only = added_files_only
 
     @torch.no_grad()
     def _probabilities(self, texts: list[str]) -> np.ndarray:
@@ -98,8 +95,6 @@ class CommitClassifier:
         for patched_file in patch:
             if patched_file.is_removed_file or patched_file.is_binary_file:
                 continue
-            if self.added_files_only and not patched_file.is_added_file:
-                continue
             language = self.extensions.get(Path(patched_file.path).suffix.lower())
             if language is None:
                 continue
@@ -108,8 +103,7 @@ class CommitClassifier:
                 candidates.append((patched_file.path, language, lines_changed, text))
 
         if not candidates:
-            kind = "newly added supported-language files" if self.added_files_only else "supported-language files with changes"
-            return {"commit": sha, "files": [], "aggregate": None, "note": f"no {kind} found"}
+            return {"commit": sha, "files": [], "aggregate": None, "note": "no supported-language files with changes found"}
 
         files_over_cap = 0
         if self.max_files and len(candidates) > self.max_files:

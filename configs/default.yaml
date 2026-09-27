@@ -124,14 +124,6 @@ model:
 monitor:
   port: 8765
 
-# `aicontrib evaluate-files` (see README): the trained classifier on whole files of each known_repos entry.
-file_eval:
-  min_tokens: 64        # shorter files are skipped: too little code for a meaningful prediction
-  files_per_repo: 200   # sampled evenly from each known repo's files (at HEAD, or created in its date range)
-  # Vendored and generated code isn't written by the repo's authors (fnmatch patterns on repo paths).
-  exclude: ["vendor/*", "*/vendor/*", "node_modules/*", "*/node_modules/*", "dist/*", "build/*",
-            "*.min.js", "*.d.ts"]
-
 # Held-out-generator evaluation (`aicontrib generator-holdout`, see README): how well the classifier
 # catches code from an AI model it never saw in training. Uses CodeMirage (the only source that
 # records the generator) in the languages of dataset.languages: every human row, plus this many

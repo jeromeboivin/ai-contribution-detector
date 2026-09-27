@@ -8,18 +8,15 @@ import traceback
 
 
 def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: str | None, samples: int, as_json: bool,
-                        added_files_only: bool = False, since=None, until=None) -> None:
+                        since=None, until=None) -> dict:
     import time
     from pathlib import Path
 
     from aicontrib.diff.known_repo_eval import evaluate_known_repo
     from aicontrib.monitor import append_known_repo_result
 
-    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, added_files_only=added_files_only,
-                                 since=since, until=until)
+    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, since=since, until=until)
     name = name or Path(repo_path).resolve().name
-    if added_files_only:
-        name += " (added files only)"  # its own dashboard card and trend: a different measurement
 
     append_known_repo_result(
         Path(cfg["paths"]["models_dir"]),
@@ -32,7 +29,6 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         mean_expected_class_probability_by_language=result["mean_expected_class_probability_by_language"],
         mean_probabilities=result["mean_probabilities"],
         predicted_counts=result["predicted_counts"],
-        added_files_only=added_files_only,
         n_commits_evaluated=result["n_commits_evaluated"],
         n_commits_skipped_no_supported_files=result["n_commits_skipped_no_supported_files"],
     )
@@ -47,12 +43,9 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         print(f"Expected class: {result['expected_class']}")
         if since or until:
             print(f"Commits from {since or 'the start'} to {until or 'now'}")
-        if added_files_only:
-            print("Scope: only files each commit adds (modified files ignored)")
-        skip_reason = "no newly added supported-language files" if added_files_only else "no supported-language changes"
         print(
             f"Commits: {result['n_commits_evaluated']} evaluated, "
-            f"{result['n_commits_skipped_no_supported_files']} skipped ({skip_reason}), "
+            f"{result['n_commits_skipped_no_supported_files']} skipped (no supported-language changes), "
             f"{result['n_commits_sampled']} sampled total"
         )
         print(f"Accuracy (argmax == expected): {result['accuracy']:.1%}")
@@ -63,27 +56,7 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         for lang, prob in sorted(result["mean_expected_class_probability_by_language"].items()):
             print(f"  {lang}: {prob:.3f}")
         print()
-
-
-def _print_file_eval(result: dict) -> None:
-    print("\nThe trained classifier on whole files of your known repositories:")
-    for r in result["repos"]:
-        if r.get("since") or r.get("until"):
-            print(f"  {r['name']}: files created from {r.get('since') or 'the start'} to {r.get('until') or 'now'}")
-    print(f"{'repo':<24}{'expected':<13}{'files':>6}{'mean P(ai)':>12}{'called AI':>11}")
-    for r in result["repos"]:
-        if r["files"]:
-            print(f"{r['name']:<24}{r['expected_class']:<13}{len(r['files']):>6}{r['mean_p_ai']:>12.3f}"
-                  f"{r['share_called_ai']:>10.0%}")
-        else:
-            print(f"{r['name']:<24}{r['expected_class']:<13}{0:>6}  (no files to score)")
-    if not result["pairs"]:
-        print("\nNo AUC: known_repos needs at least one `human` and one `ai` repo.")
-    else:
-        print("\nSeparation (AUC: chance that a random AI file scores above a random human file; 0.5 = no signal):")
-        for pair in result["pairs"]:
-            print(f"  {pair['human']} (human) vs {pair['ai']} (ai): {pair['auc']:.3f}")
-    print(f"\nPer-file results: {result['results_path']}")
+    return {**result, "name": name}
 
 
 def _print_generator_holdout(summary: dict) -> None:
@@ -149,21 +122,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     eval_repo_parser.add_argument("--since", help="Only commits after this date, e.g. 2019-01-01 (not with --all)")
     eval_repo_parser.add_argument("--until", help="Only commits before this date, e.g. 2021-12-31 (not with --all)")
-    eval_repo_parser.add_argument(
-        "--added-files-only", action="store_true",
-        help="Score only files each commit adds (whole files, like the training data); skip commits that add none",
-    )
 
     subparsers.add_parser(
         "generator-holdout",
         help="How well the classifier catches code from AI models it never saw in training (CodeMirage)",
-    )
-    files_parser = subparsers.add_parser(
-        "evaluate-files",
-        help="Score whole files of every known_repos entry and compare human vs AI repos (AUC)",
-    )
-    files_parser.add_argument(
-        "--files", type=int, help="Files to sample per repo (default: file_eval.files_per_repo in the config)"
     )
 
     report_parser = subparsers.add_parser(
@@ -255,30 +217,26 @@ def main(argv: list[str] | None = None) -> None:
             print("Either pass <repo_path> <expected_class>, or use --all to run every configured known_repos entry.")
             return
 
+        from aicontrib.diff.known_repo_eval import pair_aucs
+
+        results = []
         for repo_path, expected_class, name, since, until in targets:
             try:
-                _evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json, args.added_files_only,
-                                    since, until)
+                results.append(_evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json,
+                                                   since, until))
             except Exception as exc:  # noqa: BLE001 - one bad entry (e.g. missing local path) shouldn't abort the rest
                 print(f"[{name or repo_path}] skipped: {exc}")
                 print()
+        pairs = pair_aucs(results)
+        if pairs and not args.json:
+            print("Separation (AUC: chance that a random AI commit scores above a random human commit; 0.5 = no signal):")
+            for pair in pairs:
+                print(f"  {pair['human']} (human) vs {pair['ai']} (ai): {pair['auc']:.3f}")
     elif args.command == "generator-holdout":
         from aicontrib.config import load_config
         from aicontrib.model.generator_holdout import run_generator_holdout
 
         _print_generator_holdout(run_generator_holdout(load_config()))
-    elif args.command == "evaluate-files":
-        from pathlib import Path
-
-        from aicontrib.config import load_config
-        from aicontrib.diff.file_eval import evaluate_files
-
-        cfg = load_config()
-        if not cfg.get("known_repos"):
-            sys.exit("No known_repos configured -- add them to configs/local.yaml (see README 'Real-world validation').")
-        if not (Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt").exists():
-            sys.exit("No trained model -- run `prepare`, `embed` and `train` first (see README).")
-        _print_file_eval(evaluate_files(cfg, files_per_repo=args.files))
     elif args.command == "report":
         import subprocess
         from pathlib import Path

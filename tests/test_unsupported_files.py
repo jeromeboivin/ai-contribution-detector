@@ -25,7 +25,6 @@ def _classifier_with_stub_model() -> CommitClassifier:
     clf.class_names = cfg["classes"]["names"]
     clf.extensions = cfg["commit_classification"]["supported_extensions"]
     clf.max_files = cfg["commit_classification"]["max_files_per_commit"]
-    clf.added_files_only = False
     clf._probabilities = lambda texts: np.tile([0.3, 0.7], (len(texts), 1))
     return clf
 

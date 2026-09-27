@@ -405,7 +405,7 @@ Caveats: a signature proves an agent took part, not that it wrote every line (a 
 the diff); unsigned 2024+ commits are never used, as they may be AI-written too. And **time is
 confounded with the label**: human rows are ~2016–2021 code, AI rows 2024–2026 code, so the model could
 partly learn "recent" instead of "AI" — newer frameworks, language features and dependencies. Your own
-known repos (`evaluate-repo`, `evaluate-files`) remain the check for that. The code belongs to each
+known repos (`evaluate-repo`) remain the check for that. The code belongs to each
 repository's authors under its own license: a local build contains code whose licenses don't allow
 redistribution, so don't publish it — the archive in the repo holds only the redistributable part.
 
@@ -655,16 +655,14 @@ python -m aicontrib evaluate-repo /path/to/some/repo human --samples 50
 python -m aicontrib evaluate-repo --all
 ```
 
-Besides accuracy, the output shows how many commits went to each class and the mean probability of every
-class, not just the expected one. With the 3-class model, that tells you where the missing probability
-goes: to the opposite class, or to `co_authored`.
+Commits are classified exactly as `aicontrib report` classifies them, so these numbers describe the
+timeline you get. Besides accuracy, the output shows how many commits went to each class and the mean
+probability of every class.
 
-**`--added-files-only`** scores only the files each commit *creates*. A new file is whole, like the
-training snippets; an edit to an existing file is classified as its hunks stitched together (see Known
-limitations). If accuracy is much higher with this flag, the diff-to-snippet mismatch is a big part of
-the error. Commits that add no supported file are skipped, and most commits only modify files, so
-raise `--samples` (e.g. `--samples 300`) to get enough evaluated commits. These runs get their own
-dashboard card, "<name> (added files only)", so they don't mix into the normal trend.
+With `--all`, it ends with the **AUC** of every pair of a `human` and an `ai` entry: the chance that a
+random commit of the AI repo gets a higher P(ai) than a random commit of the human repo (0.5 = no signal,
+1.0 = perfect). The AUC needs no threshold, so it measures separation even when the probabilities are
+off-scale.
 
 **Configuring known repos** (`configs/local.yaml`, gitignored — never enters git history): copy
 `configs/local.example.yaml` to `configs/local.yaml` and list your repos there. A repo's local path is
@@ -685,9 +683,9 @@ known_repos:
 **Date ranges:** an entry can take `since` and/or `until` (e.g. `until: 2021-12-31`) to use only part of
 the history — for a huge repo, or one whose authorship changed over time. List the same repo twice under
 different names to compare its eras, e.g. `human` with `until: 2021-12-31` and `ai` with
-`since: 2025-01-01`. `evaluate-repo` then samples only commits in the range; `evaluate-files` only files
-*created* by commits in the range, read as they were at its end, so later edits don't leak in. With an
-explicit path, `evaluate-repo` takes `--since` / `--until` instead.
+`since: 2025-01-01`. `evaluate-repo` then samples only commits in the range. With an explicit path, it
+takes `--since` / `--until` instead. Yearly entries of one human repository are a good check that the
+model detects AI rather than recent code: their mean P(ai) should stay flat from year to year.
 
 **Windows paths:** write them in single quotes, `path: 'C:\Users\me\repos\tslint'`, or with forward
 slashes, `path: "C:/Users/me/repos/tslint"`. Don't use double quotes with plain backslashes
@@ -703,23 +701,6 @@ assistance. 333 TypeScript source files, 99.4% TypeScript by byte count per the 
 The automated `pytest` suite only checks the `evaluate-repo` plumbing against a synthetic throwaway repo
 (`tests/test_known_repo_eval.py`) — it doesn't depend on `configs/local.yaml` or any specific machine's
 paths.
-
-### File-level comparison of known repos
-
-```bash
-aicontrib evaluate-files
-```
-
-Scores whole files of every `known_repos` entry with the trained model: up to 200 per entry
-(`file_eval.files_per_repo`), at HEAD — or, for an entry with a date range, the files *created* within it
-(see *Date ranges* above) — skipping vendored and generated paths (`file_eval.exclude`) and files under 64
-tokens. It prints, per entry, the mean P(ai) and the share of files called AI, and for every pair of a
-`human` and an `ai` entry the **AUC**: the chance that a random file of the AI repo gets a higher P(ai) than a
-random file of the human repo (0.5 = no signal, 1.0 = perfect). The AUC needs no threshold, so it measures
-separation even when the probabilities are off-scale. Per-file results go to `models/file_eval_results.json`.
-
-Yearly entries of one human repository (`since`/`until` per year) are a good check that the model detects
-AI rather than recent code: their mean P(ai) should stay flat from year to year.
 
 ## Generalization to unseen AI models
 
