@@ -31,6 +31,13 @@ class FileResult:
     probabilities: dict[str, float]
 
 
+def weighted_aggregate(files: list[dict], class_names: list[str]) -> dict[str, float]:
+    """Class probabilities of a set of classified files, weighted by lines changed per file."""
+    weights = np.array([f["lines_changed"] for f in files], dtype=np.float64)
+    probs = np.array([[f["probabilities"][c] for c in class_names] for f in files])
+    return dict(zip(class_names, (weights[:, None] / weights.sum() * probs).sum(axis=0).tolist()))
+
+
 def run_git(repo_path: str, *args: str) -> str:
     # Capture bytes and decode ourselves: text mode would apply universal-newline translation,
     # turning a lone \r inside file content into an extra line that breaks diff hunk counts.
@@ -118,16 +125,21 @@ class CommitClassifier:
             for (path, language, lines_changed, _), p in zip(candidates, probs)
         ]
 
-        weights = np.array([fr.lines_changed for fr in file_results], dtype=np.float64)
-        aggregate = (weights[:, None] / weights.sum() * probs).sum(axis=0)
-
+        files = [
+            {"path": fr.path, "language": fr.language, "lines_changed": fr.lines_changed, "probabilities": fr.probabilities}
+            for fr in file_results
+        ]
+        # The commit's code in each language, classified on its own: the per-language breakdowns of
+        # `report` and `evaluate-repo` count a commit under every language it changes.
+        per_language = {
+            lang: weighted_aggregate([f for f in files if f["language"] == lang], self.class_names)
+            for lang in sorted({f["language"] for f in files})
+        }
         return {
             "commit": sha,
-            "files": [
-                {"path": fr.path, "language": fr.language, "lines_changed": fr.lines_changed, "probabilities": fr.probabilities}
-                for fr in file_results
-            ],
-            "aggregate": dict(zip(self.class_names, aggregate.tolist())),
+            "files": files,
+            "aggregate": weighted_aggregate(files, self.class_names),
+            "per_language": per_language,
             "files_not_classified_over_cap": files_over_cap,
         }
 

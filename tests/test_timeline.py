@@ -53,7 +53,8 @@ class _StubClassifier:
 
     def classify(self, repo_path, sha):
         _StubClassifier.calls += 1
-        return {"aggregate": {"human": 0.1, "co_authored": 0.2, "ai": 0.7}}
+        agg = {"human": 0.1, "co_authored": 0.2, "ai": 0.7}
+        return {"aggregate": agg, "per_language": {"python": agg}}
 
 
 def test_month_range_crosses_year_boundary():
@@ -74,6 +75,20 @@ def test_monthly_breakdown_fills_gaps_and_counts_skips_and_errors():
     assert months[2]["counts"]["human"] == 1 and months[2]["errors"] == 1
 
 
+def test_monthly_breakdown_per_language_counts_each_commit_under_its_languages():
+    rows = [
+        {"month": "2023-01", "predicted": "ai", "languages": {"Python": "ai", "C++": "human"}, "error": None},
+        {"month": "2023-01", "predicted": None, "languages": {}, "error": None},
+        {"month": "2023-03", "predicted": "human", "languages": {"C++": "human"}, "error": None},
+    ]
+    python = timeline.monthly_breakdown(rows, ["human", "ai"], "Python")
+    cpp = timeline.monthly_breakdown(rows, ["human", "ai"], "C++")
+    assert [m["month"] for m in python] == ["2023-01", "2023-02", "2023-03"]  # same axis for every language
+    assert python[0]["counts"] == {"human": 0, "ai": 1} and python[2]["counts"] == {"human": 0, "ai": 0}
+    assert cpp[0]["counts"] == {"human": 1, "ai": 0} and cpp[2]["counts"] == {"human": 1, "ai": 0}
+    assert python[0]["skipped"] == 0  # a commit without Python code isn't a skipped Python commit
+
+
 def test_list_commits_excludes_merges_and_uses_author_month(tmp_path):
     repo = tmp_path / "repo"
     _make_repo(repo)
@@ -91,6 +106,7 @@ def test_analyze_repo_caches_and_invalidates_on_new_model(tmp_path, monkeypatch)
     report = timeline.analyze_repo(str(repo), config_path)
     assert _StubClassifier.calls == 3
     assert report["n_classified"] == 3 and report["totals"]["ai"] == 3
+    assert report["languages"]["Python"]["totals"]["ai"] == 3
     assert [m["month"] for m in report["months"]] == ["2023-01", "2023-02", "2023-03"]
 
     timeline.analyze_repo(str(repo), config_path)
@@ -126,3 +142,21 @@ def test_date_range_limits_the_report_and_reuses_the_cache(tmp_path, monkeypatch
     full = timeline.analyze_repo(str(repo), config_path)
     assert _StubClassifier.calls == 3  # only the commit outside the first range was new
     assert full["n_classified"] == 3 and full["since"] is None
+
+
+def test_rows_cached_without_languages_are_reclassified(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    config_path = _config_with_model(tmp_path)
+    monkeypatch.setattr(timeline, "CommitClassifier", _StubClassifier)
+    timeline.analyze_repo(str(repo), config_path)
+    cache = next((tmp_path / "cache").glob("*.jsonl"))
+    rows = [json.loads(line) for line in cache.read_text().splitlines()]
+    for row in rows[:2]:
+        del row["languages"]  # as written before the per-language breakdown existed
+    cache.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    _StubClassifier.calls = 0
+    report = timeline.analyze_repo(str(repo), config_path)
+    assert _StubClassifier.calls == 2
+    assert report["languages"]["Python"]["n_classified"] == 3

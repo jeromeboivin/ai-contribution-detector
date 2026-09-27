@@ -14,6 +14,7 @@ from collections import defaultdict
 from sklearn.metrics import roc_auc_score
 
 from aicontrib.config import load_config
+from aicontrib.data.languages import canonical
 from aicontrib.diff.commit import CommitClassifier, run_git
 
 
@@ -58,7 +59,6 @@ def evaluate_known_repo(
 
     per_commit = []
     skipped = 0
-    per_language_probs: dict[str, list[float]] = defaultdict(list)
 
     for sha in shas:
         result = classifier.classify(repo_path, sha)
@@ -72,10 +72,9 @@ def evaluate_known_repo(
                 "predicted": predicted,
                 "expected_class_probability": result["aggregate"][expected_class],
                 "aggregate": result["aggregate"],
+                "per_language": {canonical(lang): agg for lang, agg in result["per_language"].items()},
             }
         )
-        for f in result["files"]:
-            per_language_probs[f["language"]].append(f["probabilities"][expected_class])
 
     n_evaluated = len(per_commit)
     n_correct = sum(1 for c in per_commit if c["predicted"] == expected_class)
@@ -86,6 +85,7 @@ def evaluate_known_repo(
         cls: sum(c["aggregate"][cls] for c in per_commit) / n_evaluated if n_evaluated else 0.0 for cls in class_names
     }
     predicted_counts = {cls: sum(1 for c in per_commit if c["predicted"] == cls) for cls in class_names}
+    by_language = language_breakdown(per_commit, expected_class, class_names)
 
     return {
         "repo": repo_path,
@@ -97,23 +97,57 @@ def evaluate_known_repo(
         "mean_expected_class_probability": mean_expected_prob,
         "mean_probabilities": mean_probabilities,
         "predicted_counts": predicted_counts,
+        "by_language": by_language,
         "mean_expected_class_probability_by_language": {
-            lang: sum(probs) / len(probs) for lang, probs in per_language_probs.items()
+            lang: b["mean_expected_class_probability"] for lang, b in by_language.items()
         },
         "per_commit": per_commit,
     }
+
+
+def language_breakdown(per_commit: list[dict], expected_class: str, class_names: list[str]) -> dict[str, dict]:
+    """Per language: the commits that change code in it, each classified on that code alone (a commit
+    changing two languages counts under both), with the same metrics as the whole-commit ones."""
+    by_language: dict[str, list[dict]] = defaultdict(list)
+    for c in per_commit:
+        for lang, agg in c["per_language"].items():
+            by_language[lang].append(agg)
+    out = {}
+    for lang in sorted(by_language):
+        aggs = by_language[lang]
+        out[lang] = {
+            "n_commits": len(aggs),
+            "accuracy": sum(max(a, key=a.get) == expected_class for a in aggs) / len(aggs),
+            "mean_expected_class_probability": sum(a[expected_class] for a in aggs) / len(aggs),
+            "mean_probabilities": {cls: sum(a[cls] for a in aggs) / len(aggs) for cls in class_names},
+        }
+    return out
+
+
+def _auc(human: list[float], ai: list[float]) -> float:
+    return float(roc_auc_score([0] * len(human) + [1] * len(ai), human + ai))
 
 
 def pair_aucs(results: list[dict]) -> list[dict]:
     """For every (human repo, AI repo) pair of evaluate_known_repo results: the chance that a random
     commit of the AI repo gets a higher P(ai) than a random commit of the human one (0.5 = no signal,
     1.0 = perfect). Needs no decision threshold, so it measures separation even when the
-    probabilities are off-scale. `results` items carry a "name" key."""
-    def p_ai(result):
-        return [c["aggregate"]["ai"] for c in result["per_commit"]]
+    probabilities are off-scale. Also per language both repos have commits in, on that language's
+    code. `results` items carry a "name" key."""
+    def p_ai(result, lang=None):
+        if lang is None:
+            return [c["aggregate"]["ai"] for c in result["per_commit"]]
+        return [c["per_language"][lang]["ai"] for c in result["per_commit"] if lang in c["per_language"]]
 
     humans = [r for r in results if r["expected_class"] == "human" and r["per_commit"]]
     ais = [r for r in results if r["expected_class"] == "ai" and r["per_commit"]]
-    return [{"human": h["name"], "ai": a["name"],
-             "auc": float(roc_auc_score([0] * len(p_ai(h)) + [1] * len(p_ai(a)), p_ai(h) + p_ai(a)))}
-            for h in humans for a in ais]
+    pairs = []
+    for h in humans:
+        for a in ais:
+            by_language = {}
+            for lang in sorted(set(h["by_language"]) & set(a["by_language"])):
+                ph, pa = p_ai(h, lang), p_ai(a, lang)
+                by_language[lang] = {"auc": _auc(ph, pa), "n_human": len(ph), "n_ai": len(pa)}
+            pairs.append({"human": h["name"], "ai": a["name"], "auc": _auc(p_ai(h), p_ai(a)),
+                          "by_language": by_language})
+    return pairs

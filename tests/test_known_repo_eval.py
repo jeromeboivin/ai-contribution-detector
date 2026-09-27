@@ -65,7 +65,8 @@ def test_evaluate_known_repo_structure(tmp_path, config_path):
     assert result["n_commits_sampled"] == 3
     assert result["n_commits_evaluated"] == 3  # all 3 touch a supported .py file
     assert 0.0 <= result["accuracy"] <= 1.0
-    assert "python" in result["mean_expected_class_probability_by_language"]
+    assert "Python" in result["mean_expected_class_probability_by_language"]
+    assert result["by_language"]["Python"]["n_commits"] == 3
     assert len(result["per_commit"]) == 3
     assert set(result["mean_probabilities"]) == {"human", "ai"}
     assert sum(result["mean_probabilities"].values()) == pytest.approx(1.0)
@@ -96,11 +97,33 @@ def test_commit_sampling_respects_the_date_range(tmp_path):
 def test_pair_aucs_compares_every_human_repo_with_every_ai_repo():
     from aicontrib.diff.known_repo_eval import pair_aucs
 
-    def repo(name, expected_class, p_ais):
-        return {"name": name, "expected_class": expected_class,
-                "per_commit": [{"aggregate": {"human": 1 - p, "ai": p}} for p in p_ais]}
+    from aicontrib.diff.known_repo_eval import language_breakdown
 
-    pairs = pair_aucs([repo("h", "human", [0.1, 0.2, 0.6]), repo("a", "ai", [0.5, 0.9]),
-                       repo("empty", "ai", [])])
+    def repo(name, expected_class, commits):
+        """commits: (P(ai), language) per commit, each changing one language."""
+        per_commit = [{"aggregate": {"human": 1 - p, "ai": p}, "per_language": {lang: {"human": 1 - p, "ai": p}}}
+                      for p, lang in commits]
+        return {"name": name, "expected_class": expected_class, "per_commit": per_commit,
+                "by_language": language_breakdown(per_commit, expected_class, ["human", "ai"])}
 
-    assert pairs == [{"human": "h", "ai": "a", "auc": pytest.approx(5 / 6)}]  # 0.6 > 0.5: one of 6 pairs misordered
+    pairs = pair_aucs([repo("h", "human", [(0.1, "Python"), (0.2, "C++"), (0.6, "Python")]),
+                       repo("a", "ai", [(0.5, "Python"), (0.9, "TypeScript")]), repo("empty", "ai", [])])
+
+    assert len(pairs) == 1
+    assert (pairs[0]["human"], pairs[0]["ai"]) == ("h", "a")
+    assert pairs[0]["auc"] == pytest.approx(5 / 6)  # 0.6 > 0.5: one of 6 pairs misordered
+    # Only languages both repos have; Python: 0.5 beats 0.1 but not 0.6.
+    assert pairs[0]["by_language"] == {"Python": {"auc": pytest.approx(0.5), "n_human": 2, "n_ai": 1}}
+
+
+def test_language_breakdown_scores_each_language_on_its_own():
+    from aicontrib.diff.known_repo_eval import language_breakdown
+
+    per_commit = [{"per_language": {"Python": {"human": 0.2, "ai": 0.8}, "C++": {"human": 0.7, "ai": 0.3}}},
+                  {"per_language": {"Python": {"human": 0.4, "ai": 0.6}}}]
+
+    b = language_breakdown(per_commit, "ai", ["human", "ai"])
+
+    assert b["Python"]["n_commits"] == 2 and b["Python"]["accuracy"] == 1.0
+    assert b["Python"]["mean_expected_class_probability"] == pytest.approx(0.7)
+    assert b["C++"]["n_commits"] == 1 and b["C++"]["accuracy"] == 0.0

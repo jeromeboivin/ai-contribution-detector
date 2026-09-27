@@ -52,9 +52,11 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         print("Predicted class counts: " + ", ".join(f"{c} {n}" for c, n in result["predicted_counts"].items()))
         print("Mean probability per class: " + ", ".join(f"{c} {p:.3f}" for c, p in result["mean_probabilities"].items()))
         print(f"Mean P({result['expected_class']}): {result['mean_expected_class_probability']:.3f}")
-        print(f"Mean P({result['expected_class']}) by language:")
-        for lang, prob in sorted(result["mean_expected_class_probability_by_language"].items()):
-            print(f"  {lang}: {prob:.3f}")
+        expected = result["expected_class"]
+        print("By language (each commit classified on its code in that language):")
+        print(f"  {'language':<12}{'commits':>8}{'accuracy':>10}{f'mean P({expected})':>16}")
+        for lang, b in result["by_language"].items():
+            print(f"  {lang:<12}{b['n_commits']:>8}{b['accuracy']:>10.1%}{b['mean_expected_class_probability']:>16.3f}")
         print()
     return {**result, "name": name}
 
@@ -232,6 +234,8 @@ def main(argv: list[str] | None = None) -> None:
             print("Separation (AUC: chance that a random AI commit scores above a random human commit; 0.5 = no signal):")
             for pair in pairs:
                 print(f"  {pair['human']} (human) vs {pair['ai']} (ai): {pair['auc']:.3f}")
+                for lang, b in pair["by_language"].items():
+                    print(f"    {lang:<12}{b['auc']:.3f}  ({b['n_human']} human / {b['n_ai']} AI commits)")
     elif args.command == "generator-holdout":
         from aicontrib.config import load_config
         from aicontrib.model.generator_holdout import run_generator_holdout

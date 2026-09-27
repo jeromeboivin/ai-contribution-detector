@@ -577,7 +577,10 @@ aicontrib report C:\Users\me\repos\my-project
 It classifies every commit in the history and writes a single self-contained HTML file (no internet or
 server needed — just open it; safe to email or attach) showing, **per month over the years, the share of
 human-written and AI-generated commits** as 100% stacked bars, with commit volume underneath, overall
-percentages at the top, hover/keyboard tooltips, and a data table. Output goes to
+percentages at the top, hover/keyboard tooltips, and a data table. Buttons at the top switch to **one
+language at a time** (TypeScript, C#, …): only the commits changing code in that language, each
+classified on that code alone, so a commit changing TypeScript and C# counts under both. A "By language"
+table sums it up. Output goes to
 `./<repo-name>-authorship-timeline.html` unless you pass `-o/--output some/file.html`. The page shows the
 repo's folder name only, never its full local path.
 
@@ -605,7 +608,8 @@ Practicalities:
 - **Resumable and incremental.** Each commit's result is cached in `data/timeline_cache/` the moment it's
   computed, so Ctrl-C and re-running picks up where it stopped, and re-running after new commits only
   classifies the new ones. Retraining the model automatically invalidates the cache (it's keyed on the
-  model file's hash). `--no-cache` forces a full re-scan.
+  model file's hash). `--no-cache` forces a full re-scan. Commits cached before the per-language
+  breakdown existed are classified again once.
 - **Quick preview:** `--max-commits 200` classifies 200 commits sampled evenly across the whole history.
 - **Speed** is dominated by embedding the changed files: fine on a GPU; on CPU expect roughly a second
   per changed code file. Bulk commits (initial imports, vendored code) are capped at the 50 files with
@@ -657,12 +661,13 @@ python -m aicontrib evaluate-repo --all
 
 Commits are classified exactly as `aicontrib report` classifies them, so these numbers describe the
 timeline you get. Besides accuracy, the output shows how many commits went to each class and the mean
-probability of every class.
+probability of every class, then the same per language: commits changing code in it, accuracy and mean
+probability, each commit classified on its code in that language alone (as on the `report` page).
 
 With `--all`, it ends with the **AUC** of every pair of a `human` and an `ai` entry: the chance that a
 random commit of the AI repo gets a higher P(ai) than a random commit of the human repo (0.5 = no signal,
 1.0 = perfect). The AUC needs no threshold, so it measures separation even when the probabilities are
-off-scale.
+off-scale. It's also given per language the two repos share, with the number of commits behind it.
 
 **Configuring known repos** (`configs/local.yaml`, gitignored — never enters git history): copy
 `configs/local.example.yaml` to `configs/local.yaml` and list your repos there. A repo's local path is
@@ -786,6 +791,5 @@ per-split runtime (up to hours) makes checkpointing worthwhile.
 - **AICD-Bench languages are partly inferred.** Its public files have no language column; rows copied
   from DroidCollection get Droid's exact label, the rest a classifier's (see
   [Languages in the training data](#languages-in-the-training-data)). C vs C++ is the least reliable split.
-  `aicontrib evaluate` doesn't yet report accuracy per language, although each prepared sample now records it.
 - **PR-level aggregation is out of scope for this phase.** The natural next step once commit-level
   predictions are validated is aggregating across a PR's commits.

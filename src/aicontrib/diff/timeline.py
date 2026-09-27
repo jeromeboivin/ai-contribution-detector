@@ -18,6 +18,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from aicontrib.config import load_config
+from aicontrib.data.languages import canonical
 from aicontrib.diff.commit import CommitClassifier, run_git
 from aicontrib.diff.known_repo_eval import date_range_args, evenly_spaced
 
@@ -44,15 +45,22 @@ def month_range(first: str, last: str) -> list[str]:
     return months
 
 
-def monthly_breakdown(rows: list[dict], class_names: list[str]) -> list[dict]:
+def monthly_breakdown(rows: list[dict], class_names: list[str], language: str | None = None) -> list[dict]:
     """Every calendar month from the first to the last commit, including empty ones,
-    so gaps in activity show as gaps on the timeline instead of being squeezed out."""
+    so gaps in activity show as gaps on the timeline instead of being squeezed out.
+
+    With a language: only commits changing code in it, each counted under the class of that code
+    alone. The months still span every commit, so all languages share the same time axis."""
     if not rows:
         return []
     by_month: dict[str, dict] = {}
     for row in rows:
         entry = by_month.setdefault(row["month"], {"counts": Counter(), "skipped": 0, "errors": 0})
-        if row.get("error"):
+        if language is not None:
+            predicted = (row.get("languages") or {}).get(language)
+            if predicted:
+                entry["counts"][predicted] += 1
+        elif row.get("error"):
             entry["errors"] += 1
         elif row["predicted"] is None:
             entry["skipped"] += 1
@@ -104,7 +112,9 @@ def analyze_repo(
             for line in f:
                 if line.strip():
                     row = json.loads(line)
-                    if not row["error"]:  # failed commits are retried: the cause may have been fixed since
+                    # Failed commits are retried (the cause may have been fixed since), and so are rows
+                    # cached before the per-language breakdown existed.
+                    if not row["error"] and "languages" in row:
                         results[row["sha"]] = row
 
     todo = [(sha, month) for sha, month in commits if sha not in results]
@@ -114,20 +124,31 @@ def analyze_repo(
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "a" if use_cache else "w", encoding="utf-8") as cache:
             for sha, month in tqdm(todo, desc="classifying commits", unit="commit"):
-                row = {"sha": sha, "month": month, "predicted": None, "aggregate": None, "error": None}
+                row = {"sha": sha, "month": month, "predicted": None, "aggregate": None, "languages": {},
+                       "error": None}
                 try:
-                    aggregate = classifier.classify(repo_path, sha)["aggregate"]
+                    result = classifier.classify(repo_path, sha)
+                    aggregate = result["aggregate"]
                     if aggregate is not None:
                         row["aggregate"] = aggregate
                         row["predicted"] = max(aggregate, key=aggregate.get)
+                        # Predicted class of the commit's code in each language, classified on its own.
+                        row["languages"] = {canonical(lang): max(agg, key=agg.get)
+                                            for lang, agg in result["per_language"].items()}
                 except Exception as exc:  # noqa: BLE001 - one odd commit shouldn't abort an hours-long scan
                     row["error"] = f"{type(exc).__name__}: {exc}"
                 cache.write(json.dumps(row) + "\n")
                 cache.flush()
                 results[sha] = row
 
-    months = monthly_breakdown([results[sha] for sha, _ in commits], class_names)
+    rows = [results[sha] for sha, _ in commits]
+    months = monthly_breakdown(rows, class_names)
     totals = {c: sum(m["counts"][c] for m in months) for c in class_names}
+    languages = {}
+    for lang in sorted({lang for row in rows for lang in row.get("languages") or {}}):
+        lang_months = monthly_breakdown(rows, class_names, lang)
+        lang_totals = {c: sum(m["counts"][c] for m in lang_months) for c in class_names}
+        languages[lang] = {"totals": lang_totals, "n_classified": sum(lang_totals.values()), "months": lang_months}
     return {
         # Folder name only, never the absolute path -- the page is meant to be shareable.
         "repo": Path(repo_path).resolve().name,
@@ -144,6 +165,8 @@ def analyze_repo(
         "n_errors": sum(m["errors"] for m in months),
         "totals": totals,
         "months": months,
+        # Same shape as the whole-commit fields, per language: see monthly_breakdown.
+        "languages": languages,
     }
 
 

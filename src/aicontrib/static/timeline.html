@@ -77,6 +77,22 @@
     margin-bottom: 20px;
   }
 
+  .lang-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .lang-tabs button {
+    font: inherit;
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  .lang-tabs button .count { color: var(--text-muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .lang-tabs button[aria-pressed="true"] { color: var(--page); background: var(--text-primary); border-color: var(--text-primary); }
+  .lang-tabs button[aria-pressed="true"] .count { color: var(--page); opacity: 0.7; }
+  .lang-tabs button:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .kpi { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
   .kpi-label { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
@@ -138,15 +154,24 @@
     <div id="subtitle" class="secondary"></div>
   </header>
 
+  <nav class="lang-tabs" id="lang-tabs" aria-label="Language" hidden></nav>
+
   <section class="kpis" id="kpis" aria-label="Overall share of commits"></section>
 
   <section class="card">
     <div class="card-head">
-      <h2>Share of commits by authorship, per month</h2>
+      <h2 id="chart-title">Share of commits by authorship, per month</h2>
       <div class="legend" id="legend"></div>
     </div>
     <div class="chart-frame" id="chart-frame"><div class="chart-scroll" id="chart-scroll"></div></div>
     <p class="note" id="note"></p>
+  </section>
+
+  <section class="card" id="by-language" hidden>
+    <h2>By language</h2>
+    <div class="table-wrap"><table id="language-table"></table></div>
+    <p class="note">A commit changing code in several languages counts under each, classified on its code in
+      that language alone.</p>
   </section>
 
   <details class="card">
@@ -212,10 +237,45 @@
   // ---- Header ------------------------------------------------------------
   document.title = `Authorship timeline — ${report.repo}`;
   document.getElementById("title").textContent = `Authorship timeline — ${report.repo}`;
-  const months = report.months;
-  const range = months.length ? `${monthName(months[0].month)} – ${monthName(months[months.length - 1].month)}` : "no commits";
+  const allMonths = report.months;
+  const range = allMonths.length ? `${monthName(allMonths[0].month)} – ${monthName(allMonths[allMonths.length - 1].month)}` : "no commits";
   document.getElementById("subtitle").textContent =
     `${range} · generated ${report.generated_at.replace("T", " ")} · model ${report.model}`;
+
+  // ---- Language selection ------------------------------------------------
+  // null = all languages (each commit classified as a whole); otherwise one language's view, where
+  // each commit changing code in it is classified on that code alone. Reports made before the
+  // per-language breakdown have no `languages` and show the whole-commit view only.
+  const languages = report.languages || {};
+  const languageNames = Object.keys(languages).sort((a, b) => languages[b].n_classified - languages[a].n_classified);
+  let language = null;
+  let view = report;
+  let months = report.months;
+
+  const tabs = document.getElementById("lang-tabs");
+  function renderTabs() {
+    tabs.replaceChildren();
+    const tab = (name, text, n) => {
+      const b = el("button", { type: "button", "aria-pressed": String(language === name) }, text);
+      b.append(el("span", { class: "count" }, fmt(n)));
+      b.addEventListener("click", () => select(name));
+      tabs.append(b);
+    };
+    tab(null, "All languages", report.n_classified);
+    for (const name of languageNames) tab(name, name, languages[name].n_classified);
+  }
+  if (languageNames.length) tabs.hidden = false;
+
+  function select(name) {
+    language = name;
+    view = name === null ? report : languages[name];
+    months = view.months;
+    renderTabs();
+    renderKpis();
+    renderNote();
+    renderTable();
+    render();
+  }
 
   // ---- KPI row -----------------------------------------------------------
   const kpis = document.getElementById("kpis");
@@ -224,12 +284,18 @@
     tile.append(labelNode, el("div", { class: "kpi-value" }, value), el("div", { class: "kpi-sub" }, sub));
     kpis.append(tile);
   };
-  kpiTile(el("div", { class: "kpi-label" }, "Commits classified"), fmt(report.n_classified),
-    `of ${fmt(report.n_commits_analyzed)} analyzed (non-merge)`);
-  for (const c of classes) {
-    const lab = el("div", { class: "kpi-label" });
-    lab.append(swatch(c), document.createTextNode(label(c)));
-    kpiTile(lab, `${pct(report.totals[c], report.n_classified)}%`, commits(report.totals[c]));
+  function renderKpis() {
+    kpis.replaceChildren();
+    kpiTile(el("div", { class: "kpi-label" }, "Commits classified"), fmt(view.n_classified),
+      language === null ? `of ${fmt(report.n_commits_analyzed)} analyzed (non-merge)` : `changing ${language} code`);
+    for (const c of classes) {
+      const lab = el("div", { class: "kpi-label" });
+      lab.append(swatch(c), document.createTextNode(label(c)));
+      kpiTile(lab, `${pct(view.totals[c], view.n_classified)}%`, commits(view.totals[c]));
+    }
+    document.getElementById("chart-title").textContent = language === null
+      ? "Share of commits by authorship, per month"
+      : `Share of commits changing ${language} code, by authorship of that code, per month`;
   }
 
   // ---- Legend ------------------------------------------------------------
@@ -241,20 +307,25 @@
   }
 
   // ---- Notes -------------------------------------------------------------
-  const noteParts = [
-    "Each commit is classified from the code it changes (Python, JavaScript/TypeScript, C++, C#) and counted " +
-      "under its most likely class, by author date.",
-  ];
-  if (report.n_skipped) noteParts.push(`Excluded: ${commits(report.n_skipped)} touching no supported-language file.`);
-  if (report.n_errors) noteParts.push(`Excluded: ${commits(report.n_errors)} that could not be read.`);
-  noteParts.push("Merge commits are excluded (their changes are already counted in the merged commits).");
-  if (report.since || report.until) {
-    noteParts.push(`Limited to commits from ${report.since || "the start"} to ${report.until || "now"} (commit date).`);
+  function renderNote() {
+    const noteParts = language === null
+      ? ["Each commit is classified from the code it changes (Python, JavaScript, TypeScript, C++, C#) and counted " +
+          "under its most likely class, by author date."]
+      : [`Only commits changing ${language} code, each classified on that code alone (its changes in other ` +
+          "languages are ignored) and counted under its most likely class, by author date."];
+    if (language === null && report.n_skipped) {
+      noteParts.push(`Excluded: ${commits(report.n_skipped)} touching no supported-language file.`);
+    }
+    if (report.n_errors) noteParts.push(`Excluded: ${commits(report.n_errors)} that could not be read.`);
+    noteParts.push("Merge commits are excluded (their changes are already counted in the merged commits).");
+    if (report.since || report.until) {
+      noteParts.push(`Limited to commits from ${report.since || "the start"} to ${report.until || "now"} (commit date).`);
+    }
+    if (report.n_commits_analyzed < report.n_commits_total) {
+      noteParts.push(`Sampled ${fmt(report.n_commits_analyzed)} of ${fmt(report.n_commits_total)} commits, evenly across history.`);
+    }
+    document.getElementById("note").textContent = noteParts.join(" ");
   }
-  if (report.n_commits_analyzed < report.n_commits_total) {
-    noteParts.push(`Sampled ${fmt(report.n_commits_analyzed)} of ${fmt(report.n_commits_total)} commits, evenly across history.`);
-  }
-  document.getElementById("note").textContent = noteParts.join(" ");
 
   // ---- Chart -------------------------------------------------------------
   const scroll = document.getElementById("chart-scroll");
@@ -276,8 +347,8 @@
       }
     }
     const foot = [n ? `${commits(n)} classified` : "No classified commits"];
-    if (m.skipped) foot.push(`${fmt(m.skipped)} without supported code`);
-    if (m.errors) foot.push(`${fmt(m.errors)} unreadable`);
+    if (language === null && m.skipped) foot.push(`${fmt(m.skipped)} without supported code`);
+    if (language === null && m.errors) foot.push(`${fmt(m.errors)} unreadable`);
     tooltip.append(el("div", { class: "tt-foot" }, foot.join(" · ")));
     tooltip.hidden = false;
 
@@ -303,7 +374,7 @@
     frame.querySelector("#yaxis")?.remove();
     scroll.replaceChildren();
     tooltip.hidden = true;
-    if (!report.n_classified) {
+    if (!view.n_classified) {
       scroll.append(el("div", { class: "empty" }, "No commits with supported-language code were found in this repository."));
       return;
     }
@@ -320,7 +391,8 @@
     const GAP = 2;
 
     const root = svg("svg", { id: "chart", width, height, role: "img",
-      "aria-label": `Monthly share of ${classes.map(label).join(", ")} commits, with commit volume below` });
+      "aria-label": `Monthly share of ${classes.map(label).join(", ")} commits${language ? ` changing ${language} code` : ""}, ` +
+        "with commit volume below" });
     chartNode = root;
     const grid = svg("g");
     const marks = svg("g");
@@ -425,27 +497,52 @@
 
   // ---- Data table --------------------------------------------------------
   const table = document.getElementById("table");
-  const head = el("tr");
-  head.append(el("th", {}, "Month"));
-  for (const c of classes) head.append(el("th", {}, label(c)));
-  head.append(el("th", {}, "Classified"), el("th", {}, "No supported code"));
-  if (report.n_errors) head.append(el("th", {}, "Unreadable"));
-  const thead = el("thead");
-  thead.append(head);
-  const tbody = el("tbody");
-  for (const m of months) {
-    const n = classified(m);
-    if (!n && !m.skipped && !m.errors) continue;
-    const tr = el("tr");
-    tr.append(el("td", {}, monthName(m.month)));
-    for (const c of classes) tr.append(el("td", {}, n ? `${pct(m.counts[c], n)}% (${fmt(m.counts[c])})` : "–"));
-    tr.append(el("td", {}, fmt(n)), el("td", {}, fmt(m.skipped)));
-    if (report.n_errors) tr.append(el("td", {}, fmt(m.errors)));
-    tbody.append(tr);
+  function renderTable() {
+    const whole = language === null;
+    const head = el("tr");
+    head.append(el("th", {}, "Month"));
+    for (const c of classes) head.append(el("th", {}, label(c)));
+    head.append(el("th", {}, "Classified"));
+    if (whole) head.append(el("th", {}, "No supported code"));
+    if (whole && report.n_errors) head.append(el("th", {}, "Unreadable"));
+    const thead = el("thead");
+    thead.append(head);
+    const tbody = el("tbody");
+    for (const m of months) {
+      const n = classified(m);
+      if (!n && !(whole && (m.skipped || m.errors))) continue;
+      const tr = el("tr");
+      tr.append(el("td", {}, monthName(m.month)));
+      for (const c of classes) tr.append(el("td", {}, n ? `${pct(m.counts[c], n)}% (${fmt(m.counts[c])})` : "–"));
+      tr.append(el("td", {}, fmt(n)));
+      if (whole) tr.append(el("td", {}, fmt(m.skipped)));
+      if (whole && report.n_errors) tr.append(el("td", {}, fmt(m.errors)));
+      tbody.append(tr);
+    }
+    table.replaceChildren(thead, tbody);
   }
-  table.append(thead, tbody);
 
-  render();
+  // ---- By-language summary -------------------------------------------------
+  if (languageNames.length) {
+    const langTable = document.getElementById("language-table");
+    const head = el("tr");
+    head.append(el("th", {}, "Language"), el("th", {}, "Commits classified"));
+    for (const c of classes) head.append(el("th", {}, label(c)));
+    const thead = el("thead");
+    thead.append(head);
+    const tbody = el("tbody");
+    for (const name of languageNames) {
+      const v = languages[name];
+      const tr = el("tr");
+      tr.append(el("td", {}, name), el("td", {}, fmt(v.n_classified)));
+      for (const c of classes) tr.append(el("td", {}, `${pct(v.totals[c], v.n_classified)}% (${fmt(v.totals[c])})`));
+      tbody.append(tr);
+    }
+    langTable.append(thead, tbody);
+    document.getElementById("by-language").hidden = false;
+  }
+
+  select(null);
   let resizeTimer;
   window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
 })();
