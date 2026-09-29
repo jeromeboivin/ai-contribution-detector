@@ -72,9 +72,10 @@ def _load_for_resume(checkpoint_path: Path, device: torch.device, cfg: dict, inp
     return model, ckpt
 
 
-def train(config_path: str | None = None, resume: bool = False) -> Path:
+def train(config_path: str | None = None, resume: bool = False, stage2: bool = True) -> Path:
     """resume: continue from the saved best model (weights, optimizer state and learning rate) instead of
-    starting over -- e.g. after raising early_stopping_patience. training.epochs then counts from there."""
+    starting over -- e.g. after raising early_stopping_patience. training.epochs then counts from there.
+    stage2: then train the second stage (aicontrib.model.stage2) for the new model, if stage2.enabled."""
     cfg = load_config(config_path) if config_path else load_config()
     device = get_device()
     torch.manual_seed(cfg["training"]["seed"])
@@ -199,6 +200,11 @@ def train(config_path: str | None = None, resume: bool = False) -> Path:
                 break
 
     print(f"best val_macro_f1={best_f1:.4f}, checkpoint saved to {checkpoint_path}")
+    if stage2 and cfg["stage2"]["enabled"] and cfg["classes"]["names"] == ["human", "ai"]:
+        from aicontrib.model.stage2 import train_stage2
+
+        print()
+        train_stage2(config_path)
     return checkpoint_path
 
 

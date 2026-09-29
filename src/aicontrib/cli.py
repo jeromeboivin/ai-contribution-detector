@@ -8,15 +8,17 @@ import traceback
 
 
 def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: str | None, samples: int, as_json: bool,
-                        since=None, until=None) -> dict:
+                        since=None, until=None, stage2: bool | None = None) -> dict:
     import time
     from pathlib import Path
 
     from aicontrib.diff.known_repo_eval import evaluate_known_repo
     from aicontrib.monitor import append_known_repo_result
 
-    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, since=since, until=until)
+    result = evaluate_known_repo(repo_path, expected_class, n_samples=samples, since=since, until=until, stage2=stage2)
     name = name or Path(repo_path).resolve().name
+    if not result["stage2"]:
+        name += " (no stage 2)"  # its own dashboard card and trend: a different classifier
 
     append_known_repo_result(
         Path(cfg["paths"]["models_dir"]),
@@ -29,6 +31,7 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
         mean_expected_class_probability_by_language=result["mean_expected_class_probability_by_language"],
         mean_probabilities=result["mean_probabilities"],
         predicted_counts=result["predicted_counts"],
+        stage2=result["stage2"],
         n_commits_evaluated=result["n_commits_evaluated"],
         n_commits_skipped_no_supported_files=result["n_commits_skipped_no_supported_files"],
     )
@@ -41,6 +44,7 @@ def _evaluate_repo_once(cfg: dict, repo_path: str, expected_class: str, name: st
     else:
         print(f"Repo: {result['repo']}")
         print(f"Expected class: {result['expected_class']}")
+        print("Classifier: embedding model + stage 2" if result["stage2"] else "Classifier: embedding model alone")
         if since or until:
             print(f"Commits from {since or 'the start'} to {until or 'now'}")
         print(
@@ -97,6 +101,10 @@ def main(argv: list[str] | None = None) -> None:
         "--resume", action="store_true",
         help="Continue from the saved best model instead of starting over (e.g. after raising early_stopping_patience)",
     )
+    train_parser.add_argument("--no-stage2", action="store_true", help="Don't train the second stage afterwards")
+    subparsers.add_parser(
+        "train-stage2", help="Train only the second stage (hand-made features) for the current model",
+    )
     subparsers.add_parser("evaluate", help="Evaluate the trained classifier on the test split")
     subparsers.add_parser(
         "monitor", help="Serve the training dashboard standalone (train already starts one automatically)"
@@ -124,6 +132,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     eval_repo_parser.add_argument("--since", help="Only commits after this date, e.g. 2019-01-01 (not with --all)")
     eval_repo_parser.add_argument("--until", help="Only commits before this date, e.g. 2021-12-31 (not with --all)")
+    eval_repo_parser.add_argument("--no-stage2", action="store_true", help="Classify with the embedding model alone (skip the second stage)")
 
     subparsers.add_parser(
         "generator-holdout",
@@ -145,6 +154,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     report_parser.add_argument("--since", help="Only commits from this date, e.g. 2018-01-01")
     report_parser.add_argument("--until", help="Only commits up to this date, e.g. 2022-11-30")
+    report_parser.add_argument("--no-stage2", action="store_true", help="Classify with the embedding model alone (skip the second stage)")
 
     args = parser.parse_args(argv)
 
@@ -175,7 +185,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "train":
         from aicontrib.model.train import train
 
-        train(resume=args.resume)
+        train(resume=args.resume, stage2=not args.no_stage2)
+    elif args.command == "train-stage2":
+        from aicontrib.model.stage2 import train_stage2
+
+        train_stage2()
     elif args.command == "evaluate":
         from aicontrib.model.evaluate import evaluate
 
@@ -225,7 +239,7 @@ def main(argv: list[str] | None = None) -> None:
         for repo_path, expected_class, name, since, until in targets:
             try:
                 results.append(_evaluate_repo_once(cfg, repo_path, expected_class, name, args.samples, args.json,
-                                                   since, until))
+                                                   since, until, stage2=False if args.no_stage2 else None))
             except Exception as exc:  # noqa: BLE001 - one bad entry (e.g. missing local path) shouldn't abort the rest
                 print(f"[{name or repo_path}] skipped: {exc}")
                 print()
@@ -253,7 +267,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(f"No trained model at {checkpoint} -- run `prepare`, `embed` and `train` first (see README).")
         try:
             out = write_report(args.repo_path, args.output, max_commits=args.max_commits, use_cache=not args.no_cache,
-                               since=args.since, until=args.until)
+                               since=args.since, until=args.until, stage2=False if args.no_stage2 else None)
         except subprocess.CalledProcessError as exc:
             sys.exit(f"git failed on {args.repo_path!r}: {exc.stderr.decode('utf-8', 'replace').strip()}")
         print(f"Report written to {out}")

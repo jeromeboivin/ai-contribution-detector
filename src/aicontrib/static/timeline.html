@@ -318,6 +318,8 @@
     if (language === null && report.n_skipped) {
       noteParts.push(`Excluded: ${commits(report.n_skipped)} changing no code in these languages.`);
     }
+    if (report.stage2 === true) noteParts.push("Scores combine the code embedding with hand-made features (second stage).");
+    if (report.stage2 === false) noteParts.push("Scored by the code embedding alone (no second stage).");
     if (report.n_errors) noteParts.push(`Excluded: ${commits(report.n_errors)} that could not be read.`);
     noteParts.push("Merge commits are excluded (their changes are already counted in the merged commits).");
     if (report.since || report.until) {

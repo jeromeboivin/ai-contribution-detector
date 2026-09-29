@@ -59,24 +59,31 @@ def _repo_path(path: str) -> Path:
     return p if p.is_absolute() else REPO_ROOT / p
 
 
-def iter_agent_commits(source_cfg: dict[str, Any], split: str) -> Iterator[Row]:
-    """A local build by `aicontrib build-agent-commits` (aicontrib/data/agent_commits.py) if there is one,
-    else the gzipped archives shipped in the repo (`archive`: the permissively licensed rows and the
-    copyleft ones, kept apart), decompressed as they're read."""
+def agent_commit_rows(source_cfg: dict[str, Any], split: str, quiet: bool = False) -> Iterator[dict]:
+    """Every field of the agent-commit rows of a split (code, label, language, repo, commit...): a local
+    build by `aicontrib build-agent-commits` (aicontrib/data/agent_commits.py) if there is one, else the
+    gzipped archives shipped in the repo (`archive`: the permissively licensed rows and the copyleft ones,
+    kept apart), decompressed as they're read."""
     local = _repo_path(source_cfg["path"]) / f"{split}.jsonl"
     if local.exists():
         files = [local]
     else:
         files = [p for d in source_cfg.get("archive") or [] if (p := _repo_path(d) / f"{split}.jsonl.gz").exists()]
         if not files:
-            print(f"[{source_cfg['name']}] no {local} and no archive -- run `aicontrib build-agent-commits`")
+            if not quiet:
+                print(f"[{source_cfg['name']}] no {local} and no archive -- run `aicontrib build-agent-commits`")
             return
-    print(f"[{source_cfg['name']}] reading {', '.join(str(p) for p in files)}")
+    if not quiet:
+        print(f"[{source_cfg['name']}] reading {', '.join(str(p) for p in files)}")
     for path in files:
         with (gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else open(path, encoding="utf-8")) as f:
             for line in f:
-                row = json.loads(line)
-                yield row["code"], row["label"], canonical(row["language"])
+                yield json.loads(line)
+
+
+def iter_agent_commits(source_cfg: dict[str, Any], split: str) -> Iterator[Row]:
+    for row in agent_commit_rows(source_cfg, split):
+        yield row["code"], row["label"], canonical(row["language"])
 
 
 ADAPTERS = {

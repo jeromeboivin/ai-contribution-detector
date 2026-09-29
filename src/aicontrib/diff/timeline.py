@@ -20,6 +20,7 @@ from tqdm import tqdm
 from aicontrib.config import load_config
 from aicontrib.data.languages import canonical
 from aicontrib.diff.commit import CommitClassifier, run_git, scored_languages
+from aicontrib.model.stage2 import load_stage2
 from aicontrib.diff.known_repo_eval import date_range_args, evenly_spaced
 
 _TEMPLATE = Path(__file__).resolve().parents[1] / "static" / "timeline.html"
@@ -88,19 +89,20 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()[:12]
 
 
-def _cache_path(cfg: dict, repo_path: str, model_digest: str, languages: list[str]) -> Path:
-    """One cache per repo, model and set of scored languages: each changes the predictions."""
+def _cache_path(cfg: dict, repo_path: str, model_digest: str, languages: list[str], stage2_id: str) -> Path:
+    """One cache per repo, model, set of scored languages and second stage: each changes the predictions."""
     resolved = Path(repo_path).resolve()
     repo_id = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:8]
     languages_id = hashlib.sha256(",".join(languages).encode("utf-8")).hexdigest()[:6]
     return (Path(cfg["paths"]["timeline_cache_dir"])
-            / f"{resolved.name}-{repo_id}-model-{model_digest}-languages-{languages_id}.jsonl")
+            / f"{resolved.name}-{repo_id}-model-{model_digest}-languages-{languages_id}-stage2-{stage2_id}.jsonl")
 
 
 def analyze_repo(
     repo_path: str, config_path: str | None = None, max_commits: int | None = None, use_cache: bool = True,
-    since: str | None = None, until: str | None = None,
+    since: str | None = None, until: str | None = None, stage2: bool | None = None,
 ) -> dict:
+    """stage2: apply the second stage (None: stage2.enabled in the config)."""
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
     model_digest = _file_digest(Path(cfg["paths"]["models_dir"]) / "mlp_classifier.pt")
@@ -109,7 +111,8 @@ def analyze_repo(
     commits = evenly_spaced(all_commits, max_commits) if max_commits else all_commits
 
     languages = scored_languages(cfg)
-    cache_path = _cache_path(cfg, repo_path, model_digest, languages)
+    second = load_stage2(cfg) if (cfg["stage2"]["enabled"] if stage2 is None else stage2) else None
+    cache_path = _cache_path(cfg, repo_path, model_digest, languages, second.digest if second else "off")
     results: dict[str, dict] = {}
     if use_cache and cache_path.exists():
         with open(cache_path, encoding="utf-8") as f:
@@ -124,7 +127,7 @@ def analyze_repo(
     todo = [(sha, month) for sha, month in commits if sha not in results]
     if todo:
         print(f"{len(commits) - len(todo)} commits already cached, classifying {len(todo)} more")
-        classifier = CommitClassifier(config_path)
+        classifier = CommitClassifier(config_path, stage2=second is not None)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "a" if use_cache else "w", encoding="utf-8") as cache:
             for sha, month in tqdm(todo, desc="classifying commits", unit="commit"):
@@ -159,6 +162,7 @@ def analyze_repo(
         "generated_at": dt.datetime.now().isoformat(timespec="minutes"),
         "model": model_digest,
         "scored_languages": languages,
+        "stage2": second is not None,
         "class_names": class_names,
         "class_labels": {c: CLASS_LABELS.get(c, c) for c in class_names},
         "since": str(since) if since else None,
@@ -189,8 +193,9 @@ def write_report(
     use_cache: bool = True,
     since: str | None = None,
     until: str | None = None,
+    stage2: bool | None = None,
 ) -> Path:
-    report = analyze_repo(repo_path, config_path, max_commits, use_cache, since, until)
+    report = analyze_repo(repo_path, config_path, max_commits, use_cache, since, until, stage2)
     out_path = Path(output) if output else Path.cwd() / f"{report['repo']}-authorship-timeline.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_html(report), encoding="utf-8")

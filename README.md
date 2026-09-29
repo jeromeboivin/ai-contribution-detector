@@ -71,8 +71,9 @@ aicontrib evaluate
 - If anything interrupts it (closed window, reboot), just run the same command again: it resumes where it
   stopped.
 - While `train` runs, open **http://127.0.0.1:8765** in a browser on the same PC to watch progress live.
+- `train` ends by training a [second stage](#second-stage-hand-made-features) (a few more minutes).
 - `evaluate` prints how accurate the finished model is. The model itself is saved as
-  `models\mlp_classifier.pt`.
+  `models\mlp_classifier.pt` (and the second stage as `models\stage2.pkl`).
 
 ### 3. Analyze a repository
 
@@ -168,7 +169,9 @@ still fails, set a smaller batch in `configs/local.yaml`, e.g.
 2. A small trainable MLP classifies that vector as `human` or `ai`.
 3. Only the MLP is trained — the encoder is frozen, so training is fast even on CPU. A GPU, if present,
    is used automatically to speed up the one-time embedding pass over the dataset.
-4. For git commits, the changed region of each file in the diff is reconstructed and classified the same
+4. A second stage corrects that score with a few hand-made features of the code the vector misses
+   (comment style, trailing whitespace, typographic symbols…) — see [Second stage](#second-stage-hand-made-features).
+5. For git commits, the changed region of each file in the diff is reconstructed and classified the same
    way, then aggregated to one commit-level prediction weighted by lines changed per file.
 
 ## Model architecture (for data scientists)
@@ -298,6 +301,70 @@ hunk post-images are fragments, not the whole files the model was trained on (sn
 first-token pooling was trained for retrieval, not authorship (`representation: hidden` is the alternative); with the default uncapped dataset, class
 frequencies follow the sources and the loss is unweighted (macro-F1 selection only partly compensates) —
 see also [Known limitations](#known-limitations).
+
+### Second stage: hand-made features
+
+The embedding reads code as tokens, and some traits that set AI-written code apart get lost or diluted
+there. A **second stage** (`aicontrib/model/stage2.py`) takes the embedding MLP's P(ai) for each file and
+13 hand-made features of its text (`aicontrib/features/handcrafted.py`), and a small gradient-boosted tree
+model outputs the final P(ai):
+
+| Group | Features | What they catch |
+|---|---|---|
+| Comments | words per comment, share of comment characters, share of comment-only lines, TODO/FIXME count | AI writes more, longer, full-sentence comments; humans leave TODOs |
+| Formatting | trailing-whitespace share, blank-line share | humans' editors leave trailing spaces, which the tokenizer can't see |
+| Characters | typographic symbols (em dash, arrows, curly quotes, ✓), non-ASCII share | characters a keyboard doesn't type easily |
+| Defensive code | null checks (`?.`, `??`, `is None`…), TypeScript `any`, logging calls | |
+| Shape | maximum nesting depth, token entropy | |
+
+**Why, and how much.** Measured on 17,000 agent-commit rows, predicting repositories never seen in
+training (5-fold cross-validation grouped by repository), then on tslint (human) vs esker-cowork (AI):
+
+| | AUC, unseen repositories | tslint vs esker-cowork, per commit | tslint commits called AI |
+|---|---|---|---|
+| Embedding only | 0.794 | 0.887 | 37% |
+| Features only | 0.738 | 0.907 | 48% |
+| Features appended to the embedding vector | 0.805 | 0.918 | 38% |
+| **Second stage** | **0.823** | **0.951** | **32%** |
+
+The gain holds in every language (+0.02 to +0.035), inside repositories (within-repository AUC 0.802 →
+0.826, better in 81% of them) and when whole repositories are resampled (95% interval +0.022 to +0.036).
+Appending the features to the 1,536-d vector barely helps: the MLP mostly ignores 13 extra inputs, and
+several are rare all-or-nothing signals (an em dash, a TODO) that a tree model picks up better. Size,
+naming, structure and repetition features were measured too and added nothing.
+
+**Training.** `aicontrib train` trains the second stage after the MLP (`--no-stage2` skips it;
+`aicontrib train-stage2` trains only it, for the current MLP). It learns from the agent-commit rows of the
+training split (`stage2.train_on`), which needs each row's P(ai) from a model that never saw it: the rows
+are split into 5 groups by repository (`stage2.folds`), and for each group an MLP is trained on every other
+training row exactly as `train` does. So it takes about 5 more MLP trainings — minutes, as the embeddings
+are cached; nothing is re-embedded. It then prints AUC with and without it, per language: cross-validated
+over the training repositories (the most reliable figure: ~100 repositories), then on the validation and
+test splits' agent-commit rows (only a few repositories per language, so noisy). It saves
+`models/stage2.pkl`, tied to the MLP it was trained for: after retraining the MLP, the old second stage is
+ignored (with a note) until it's retrained too.
+
+Run through this code on the analysis sample, the cross-validated gain was +0.020 to +0.043 in every
+language (C# +0.043, C++ +0.031, TypeScript +0.029, Python +0.024, JavaScript +0.020), and on tslint vs
+esker-cowork the tslint commits called AI fell from 37% to 29% (esker-cowork: 97% → 96% caught). The
+validation and test splits disagreed for C++ and C# (−0.02 to −0.10), but they hold 1–2 repositories of
+each. If a language gets worse on your own repositories, leave it out:
+
+```yaml
+# configs/local.yaml -- the second stage for these languages only; the others keep the embedding's score
+stage2:
+  languages: [TypeScript, JavaScript, Python]
+```
+
+**Using it.** `report`, `evaluate-repo` and `classify-commit` apply it whenever it's trained for the
+current model and `stage2.enabled` is true. To compare, `evaluate-repo --no-stage2` and `report --no-stage2`
+classify with the embedding model alone; `evaluate-repo` says which it used, and its dashboard cards keep
+the two apart ("<name> (no stage 2)").
+
+**Caveats.** Trailing whitespace is the least certain feature: it depends on each team's editors and
+formatters, and human code from 2020-21 has less of it than older code, so part of its signal may be "recent"
+rather than "AI". Without it the second stage still gains +0.022; to drop it, list the other features under
+`stage2.features` in `configs/local.yaml`. And the false-alarm rate on human code drops, but doesn't vanish.
 
 ## Dataset
 
@@ -559,7 +626,7 @@ python -m aicontrib prepare
 # 3. Embed every split with the frozen encoder (the slow, one-time step)
 python -m aicontrib embed
 
-# 4. Train the MLP head (also starts a live dashboard at http://127.0.0.1:8765)
+# 4. Train the MLP head (also starts a live dashboard at http://127.0.0.1:8765), then the second stage
 python -m aicontrib train
 
 # 5. Evaluate on the held-out test split

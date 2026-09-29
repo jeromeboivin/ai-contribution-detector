@@ -55,7 +55,7 @@ def _config_with_model(tmp_path: Path) -> str:
 class _StubClassifier:
     calls = 0
 
-    def __init__(self, config_path=None):
+    def __init__(self, config_path=None, stage2=None):
         pass
 
     def classify(self, repo_path, sha):

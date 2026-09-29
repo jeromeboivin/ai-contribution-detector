@@ -11,16 +11,17 @@ dataset:
   # the AICD-Bench paper, arXiv:2602.02079, Sec. 3), so its content is already folded
   # into AICD-Bench. Adding Droid again would only reintroduce near-duplicate rows.
   sources:
-    # Real-repository commits signed by coding agents vs pre-2021 human commits, TypeScript (see README).
+    # Real-repository commits signed by coding agents vs pre-2021 human commits: TypeScript, JavaScript,
+    # Python, C++ and C# (see README).
     # A local build (`aicontrib build-agent-commits`) in `path` is used if present, else the gzipped
-    # archives shipped in the repo (51 repositories, 10,605 rows per class; see CREDITS.md). Listed first: sources are pulled in
+    # archives shipped in the repo (142 repositories, five languages; see CREDITS.md). Listed first: sources are pulled in
     # order until the caps are reached (see dataset.balance_languages).
     - name: agent_commits
       enabled: true
       adapter: agent_commits
       path: "data/agent_commits"
       archive: ["datasets/agent_commits", "datasets/agent_commits/copyleft"]
-      license: "each source repository's own license -- see CREDITS.md (copyleft rows: GPL-3.0/AGPL-3.0)"
+      license: "each source repository's own license -- see CREDITS.md (copyleft rows: GPL, LGPL, AGPL, MPL)"
       hf_splits: {train: train, validation: validation, test: test}
     - name: aicd_bench
       enabled: true
@@ -123,6 +124,20 @@ model:
 
 monitor:
   port: 8765
+
+# Second stage (README, "Second stage"): a small gradient-boosted tree model that corrects the embedding
+# model's P(ai) with hand-made features of the code the embedding misses. `aicontrib train` trains it after
+# the MLP (`aicontrib train-stage2` alone); `report` and `evaluate-repo` apply it (--no-stage2: embedding
+# model alone). Binary model only.
+stage2:
+  enabled: true
+  features: [mean_comment_words, comment_char_ratio, comment_line_ratio, todo_count, trailing_ws_ratio,
+             blank_line_ratio, typographic_symbols, non_ascii_ratio, null_check_density, any_density,
+             log_call_density, max_indent_depth, token_entropy]
+  languages: null         # null: every language; or a list, e.g. [TypeScript, JavaScript, Python] -- others keep the
+                           # embedding model's score (no retraining needed; see train-stage2's per-language report)
+  train_on: agent_commits  # the training rows it learns from: agent_commits (real commits) or all
+  folds: 5                 # extra MLPs trained to score those rows out of fold (each about as long as `train`)
 
 # Held-out-generator evaluation (`aicontrib generator-holdout`, see README): how well the classifier
 # catches code from an AI model it never saw in training. Uses CodeMirage (the only source that

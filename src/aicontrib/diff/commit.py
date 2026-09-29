@@ -89,7 +89,9 @@ class CommitClassifier:
     """Loads the encoder and MLP once, then classifies any number of commits --
     reloading the 110M-param encoder per commit would dominate a full-history scan."""
 
-    def __init__(self, config_path: str | None = None):
+    def __init__(self, config_path: str | None = None, stage2: bool | None = None):
+        """stage2: apply the second stage (aicontrib.model.stage2) if one is trained for this model; None
+        follows stage2.enabled in the config."""
         self.cfg = load_config(config_path) if config_path else load_config()
         self.device = get_device()
         self.embedder = CodeEmbedder(self.cfg)
@@ -101,15 +103,24 @@ class CommitClassifier:
         self.extensions = {ext: lang for ext, lang in self.cfg["commit_classification"]["supported_extensions"].items()
                            if canonical(lang) in self.languages}
         self.max_files = self.cfg["commit_classification"].get("max_files_per_commit")
+        self.stage2 = None
+        if self.cfg["stage2"]["enabled"] if stage2 is None else stage2:
+            from aicontrib.model.stage2 import load_stage2
+
+            self.stage2 = load_stage2(self.cfg)
 
     @torch.no_grad()
-    def _probabilities(self, texts: list[str]) -> np.ndarray:
+    def _probabilities(self, texts: list[str], languages: list[str]) -> np.ndarray:
         batch_size = self.cfg["embedding"]["batch_size"]
         chunks = []
         for i in range(0, len(texts), batch_size):
             x = torch.tensor(self.embedder.embed_batch(texts[i : i + batch_size]), dtype=torch.float32)
             chunks.append(torch.softmax(self.model(x.to(self.device)), dim=-1).cpu().numpy())
-        return np.concatenate(chunks, axis=0)
+        probs = np.concatenate(chunks, axis=0)
+        if self.stage2 is not None:  # binary model: columns human, ai
+            p_ai = self.stage2.apply(probs[:, 1], texts, languages)
+            probs = np.c_[1 - p_ai, p_ai]
+        return probs
 
     def classify(self, repo_path: str, sha: str) -> dict:
         patch = PatchSet(_get_unified_diff(repo_path, sha))
@@ -134,7 +145,7 @@ class CommitClassifier:
             files_over_cap = len(candidates) - self.max_files
             candidates = candidates[: self.max_files]
 
-        probs = self._probabilities([c[3] for c in candidates])
+        probs = self._probabilities([c[3] for c in candidates], [c[1] for c in candidates])
         file_results = [
             FileResult(path=path, language=language, lines_changed=lines_changed,
                        probabilities=dict(zip(self.class_names, p.tolist())))

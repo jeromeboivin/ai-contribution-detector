@@ -40,10 +40,11 @@ def _sample_commit_shas(repo_path: str, n_samples: int, since=None, until=None) 
 
 def evaluate_known_repo(
     repo_path: str, expected_class: str, n_samples: int = 50, config_path: str | None = None,
-    since=None, until=None,
+    since=None, until=None, stage2: bool | None = None,
 ) -> dict:
     """Commits are classified exactly as `report` classifies them. since/until: only sample
-    commits in that date range (anything `git log --since` accepts, e.g. 2021-12-31)."""
+    commits in that date range (anything `git log --since` accepts, e.g. 2021-12-31). stage2: apply the
+    second stage (None: stage2.enabled in the config)."""
     cfg = load_config(config_path) if config_path else load_config()
     class_names = cfg["classes"]["names"]
     # A repo labelled with a class the model merges into another (co_authored -> human) is scored as that one.
@@ -55,7 +56,7 @@ def evaluate_known_repo(
     if not shas:
         raise ValueError(f"no commits in {repo_path}" + (f" between {since or 'the start'} and {until or 'now'}"
                                                           if since or until else ""))
-    classifier = CommitClassifier(config_path)
+    classifier = CommitClassifier(config_path, stage2=stage2)
 
     per_commit = []
     skipped = 0
@@ -90,6 +91,7 @@ def evaluate_known_repo(
     return {
         "repo": repo_path,
         "expected_class": expected_class,
+        "stage2": classifier.stage2 is not None,
         "n_commits_sampled": len(shas),
         "n_commits_evaluated": n_evaluated,
         "n_commits_skipped_no_supported_files": skipped,
